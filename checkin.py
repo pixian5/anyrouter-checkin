@@ -22,6 +22,18 @@ load_dotenv()
 BALANCE_HASH_FILE = 'balance_hash.txt'
 
 
+def is_playwright_headless() -> bool:
+	"""决定 Playwright 是否使用无头模式。
+
+	优先读取 PLAYWRIGHT_HEADLESS；未配置时，无图形环境默认使用无头模式。
+	"""
+	value = os.getenv('PLAYWRIGHT_HEADLESS')
+	if value is not None:
+		return value.strip().lower() not in {'0', 'false', 'no', 'off'}
+
+	return not bool(os.getenv('DISPLAY') or os.getenv('WAYLAND_DISPLAY'))
+
+
 def load_balance_hash():
 	"""加载余额hash"""
 	try:
@@ -75,7 +87,7 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 		with tempfile.TemporaryDirectory() as temp_dir:
 			context = await p.chromium.launch_persistent_context(
 				user_data_dir=temp_dir,
-				headless=False,
+				headless=is_playwright_headless(),
 				user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
 				viewport={'width': 1920, 'height': 1080},
 				args=[

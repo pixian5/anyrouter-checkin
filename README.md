@@ -358,6 +358,35 @@ uv run playwright install chromium
 uv run checkin.py
 ```
 
+## Ubuntu 服务器部署
+
+如果你要部署到 Ubuntu 无桌面服务器，建议使用 Python 虚拟环境加 `systemd timer` 定时执行：
+
+```bash
+git clone https://github.com/pixian5/anyrouter-checkin.git
+cd anyrouter-checkin
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install .
+playwright install chromium --with-deps
+```
+
+然后创建 `.env`：
+
+```bash
+ANYROUTER_ACCOUNTS=[{"name":"账号1","provider":"anyrouter","cookies":{"session":"xxx"},"api_user":"12345"}]
+PROVIDERS={"dogaltman":{"domain":"https://ai.dogaltman.us.ci","sign_in_path":"/api/user/checkin","bypass_method":"waf_cookies","waf_cookie_names":["cf_clearance"]}}
+PLAYWRIGHT_HEADLESS=true
+```
+
+说明：
+
+- Ubuntu 服务器通常没有图形界面，Playwright 需要使用无头模式。项目现已支持通过 `PLAYWRIGHT_HEADLESS=true` 显式指定
+- 某些第三方站点需要额外 WAF cookies，建议通过 `PROVIDERS` 显式配置
+- 若服务商对机房 IP 有风控，即使 cookies 正确也可能返回 403，这种情况需要更换运行环境或继续针对该站点单独适配
+
 ## 测试
 
 ```bash
