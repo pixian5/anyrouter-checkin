@@ -134,6 +134,8 @@
 - 支持部分账号失败，只要有账号成功签到，整个任务就不会失败
 - 报 401 错误，请重新获取 cookies，理论 1 个月失效，但有 Bug，详见 [#6](https://github.com/millylee/anyrouter-check-in/issues/6)
 - 请求 200，但出现 Error 1040（08004）：Too many connections，官方数据库问题，目前已修复，但遇到几次了，详见 [#7](https://github.com/millylee/anyrouter-check-in/issues/7)
+- 部分第三方 `new-api` 站点的签到接口不是默认的 `/api/user/sign_in`，而是 `/api/user/checkin`，需要在 `PROVIDERS` 中为对应 provider 显式配置 `sign_in_path`
+- 如果某个站点 `GET /api/user/self` 返回 401，而其他同类站点正常，通常是该站点的 `session` 已失效，需要重新抓取 cookies 后更新 GitHub Secrets
 
 ## 配置示例
 
