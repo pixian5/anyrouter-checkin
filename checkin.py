@@ -111,14 +111,20 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 				except Exception:
 					await page.wait_for_timeout(3000)
 
-				cookies = await page.context.cookies()
-
 				waf_cookies = {}
-				for cookie in cookies:
-					cookie_name = cookie.get('name')
-					cookie_value = cookie.get('value')
-					if cookie_name in required_cookies and cookie_value is not None:
-						waf_cookies[cookie_name] = cookie_value
+				# Cloudflare 等挑战类站点可能在页面稳定后延迟写入 cookies，这里轮询等待。
+				for _ in range(15):
+					cookies = await page.context.cookies()
+					for cookie in cookies:
+						cookie_name = cookie.get('name')
+						cookie_value = cookie.get('value')
+						if cookie_name in required_cookies and cookie_value is not None:
+							waf_cookies[cookie_name] = cookie_value
+
+					if all(cookie_name in waf_cookies for cookie_name in required_cookies):
+						break
+
+					await page.wait_for_timeout(1000)
 
 				print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies')
 
