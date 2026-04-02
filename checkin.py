@@ -287,7 +287,7 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 
 	all_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
 	if not all_cookies:
-		return False, None
+		return False, None, None
 
 	client = httpx.Client(http2=True, timeout=30.0)
 
