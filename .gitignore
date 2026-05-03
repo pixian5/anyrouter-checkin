@@ -6,5 +6,6 @@ __pycache__
 .ruff_cache
 .mypy_cache
 balance_hash.txt
+daily_checkin_state.json
 
 .DS_Store

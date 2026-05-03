@@ -20,6 +20,46 @@ from utils.notify import notify
 load_dotenv()
 
 BALANCE_HASH_FILE = 'balance_hash.txt'
+DAILY_CHECK_IN_STATE_FILE = 'daily_checkin_state.json'
+
+
+def load_daily_check_in_state():
+	"""加载每日签到状态"""
+	try:
+		if os.path.exists(DAILY_CHECK_IN_STATE_FILE):
+			with open(DAILY_CHECK_IN_STATE_FILE, 'r', encoding='utf-8') as f:
+				data = json.load(f)
+				return data if isinstance(data, dict) else {}
+	except Exception as e:
+		print(f'Warning: Failed to load daily check-in state: {e}')
+	return {}
+
+
+def save_daily_check_in_state(state):
+	"""保存每日签到状态"""
+	try:
+		with open(DAILY_CHECK_IN_STATE_FILE, 'w', encoding='utf-8') as f:
+			json.dump(state, f, ensure_ascii=False, indent=2)
+	except Exception as e:
+		print(f'Warning: Failed to save daily check-in state: {e}')
+
+
+def has_checked_in_with_balance_change_today():
+	"""判断今天是否已经出现过签到余额增长"""
+	state = load_daily_check_in_state()
+	today = datetime.now().strftime('%Y-%m-%d')
+	return state.get('date') == today and state.get('balance_increased') is True
+
+
+def mark_checked_in_with_balance_change_today(details, run_time: str):
+	"""记录今天已经出现过签到余额增长"""
+	state = {
+		'date': datetime.now().strftime('%Y-%m-%d'),
+		'balance_increased': True,
+		'run_time': run_time,
+		'details': details,
+	}
+	save_daily_check_in_state(state)
 
 
 def is_playwright_headless() -> bool:
@@ -225,7 +265,7 @@ def execute_check_in(client, account_name: str, provider_config, headers: dict):
 		return False
 
 
-def format_check_in_notification(detail: dict) -> str:
+def format_check_in_notification(detail: dict, check_in_time: str | None = None) -> str:
 	"""格式化签到通知消息
 
 	Args:
@@ -234,13 +274,12 @@ def format_check_in_notification(detail: dict) -> str:
 	Returns:
 		格式化后的通知消息
 	"""
+	check_in_label = check_in_time or detail['name']
 	lines = [
-		f'[CHECK-IN] {detail["name"]}',
+		f'[CHECK-IN] {check_in_label}',
 		'  ━━━━━━━━━━━━━━━━━━━━',
-		'  📍 签到前',
-		f'     💵 余额: ${detail["before_quota"]:.2f}  |  📊 累计消耗: ${detail["before_used"]:.2f}',
-		'  📍 签到后',
-		f'     💵 余额: ${detail["after_quota"]:.2f}  |  📊 累计消耗: ${detail["after_used"]:.2f}',
+		f'  📍 签到前 💵 余额: ${detail["before_quota"]:.2f}  |  📊 累计消耗: ${detail["before_used"]:.2f}',
+		f'  📍 签到后 💵 余额: ${detail["after_quota"]:.2f}  |  📊 累计消耗: ${detail["after_used"]:.2f}',
 	]
 
 	# 判断是否有变化
@@ -253,14 +292,6 @@ def format_check_in_notification(detail: dict) -> str:
 		# 已签到但期间有使用
 		if not has_reward and has_usage:
 			lines.append('  ℹ️  今日已签到（期间有使用）')
-
-		# 签到获得
-		if has_reward:
-			lines.append(f'  🎁 签到获得: +${detail["check_in_reward"]:.2f}')
-
-		# 期间消耗
-		if has_usage:
-			lines.append(f'  📉 期间消耗: ${detail["usage_increase"]:.2f}')
 
 		# 余额变化
 		if detail['balance_change'] != 0:
@@ -342,7 +373,12 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 async def main():
 	"""主函数"""
 	print('[SYSTEM] AnyRouter.top multi-account auto check-in script started (using Playwright)')
-	print(f'[TIME] Execution time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+	current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+	print(f'[TIME] Execution time: {current_time}')
+
+	if has_checked_in_with_balance_change_today():
+		print('[INFO] Today already had a successful balance increase, skipping check-in')
+		sys.exit(0)
 
 	app_config = AppConfig.load_from_env()
 	print(f'[INFO] Loaded {len(app_config.providers)} provider configuration(s)')
@@ -363,6 +399,7 @@ async def main():
 	account_check_in_details = {}  # 存储每个账号的签到详情
 	need_notify = False  # 是否需要发送通知
 	balance_changed = False  # 余额是否有变化
+	balance_increased_today = False  # 今天是否通过签到获得余额增长
 
 	for i, account in enumerate(accounts):
 		account_key = f'account_{i + 1}'
@@ -417,6 +454,9 @@ async def main():
 						'success': success,
 					}
 
+					if success and balance_change > 0:
+						balance_increased_today = True
+
 			if should_notify_this_account:
 				account_name = account.get_display_name(i)
 				status = '[SUCCESS]' if success else '[FAIL]'
@@ -468,27 +508,30 @@ async def main():
 	if current_balance_hash:
 		save_balance_hash(current_balance_hash)
 
+	if balance_increased_today:
+		mark_checked_in_with_balance_change_today(account_check_in_details, current_time)
+
 	if need_notify and notification_content:
 		# 构建通知内容
-		summary = [
-			'[STATS] Check-in result statistics:',
-			f'[SUCCESS] Success: {success_count}/{total_count}',
-			f'[FAIL] Failed: {total_count - success_count}/{total_count}',
-		]
-
 		if success_count == total_count:
-			summary.append('[SUCCESS] All accounts check-in successful!')
+			title = f'✅ anyrouter签到全部成功 ({success_count}/{total_count})'
+			notify_items = []
+			for i, account in enumerate(accounts):
+				account_key = f'account_{i + 1}'
+				if account_key in account_check_in_details:
+					notify_items.append(format_check_in_notification(account_check_in_details[account_key], current_time))
+			notify_content = '\n\n'.join(notify_items or notification_content)
 		elif success_count > 0:
-			summary.append('[WARN] Some accounts check-in successful')
+			summary = f'\n\n⚠️ 部分成功: 成功 {success_count} 个, 失败 {total_count - success_count} 个'
+			title = f'签到 {current_time}'
+			notify_content = '\n\n'.join(notification_content) + summary
 		else:
-			summary.append('[ERROR] All accounts check-in failed')
-
-		time_info = f'[TIME] Execution time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
-
-		notify_content = '\n\n'.join([time_info, '\n'.join(notification_content), '\n'.join(summary)])
+			summary = f'\n\n❌ 全部失败 ({total_count - success_count}/{total_count})'
+			title = f'签到 {current_time}'
+			notify_content = '\n\n'.join(notification_content) + summary
 
 		print(notify_content)
-		notify.push_message('AnyRouter Check-in Alert', notify_content, msg_type='text')
+		notify.push_message(title, notify_content, msg_type='text')
 		print('[NOTIFY] Notification sent due to failures or balance changes')
 	else:
 		print('[INFO] All accounts successful and no balance changes detected, notification skipped')
