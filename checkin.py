@@ -23,6 +23,12 @@ BALANCE_HASH_FILE = 'balance_hash.txt'
 DAILY_CHECK_IN_STATE_FILE = 'daily_checkin_state.json'
 
 
+def get_anyrouter_proxy() -> str | None:
+	"""读取 AnyRouter 专用客户端代理地址。"""
+	proxy = os.getenv('ANYROUTER_PROXY', '').strip()
+	return proxy or None
+
+
 def load_daily_check_in_state():
 	"""加载每日签到状态"""
 	try:
@@ -125,18 +131,26 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 		import tempfile
 
 		with tempfile.TemporaryDirectory() as temp_dir:
-			context = await p.chromium.launch_persistent_context(
-				user_data_dir=temp_dir,
-				headless=is_playwright_headless(),
-				user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-				viewport={'width': 1920, 'height': 1080},
-				args=[
+			launch_options = {
+				'user_data_dir': temp_dir,
+				'headless': is_playwright_headless(),
+				'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+				'viewport': {'width': 1920, 'height': 1080},
+				'args': [
 					'--disable-blink-features=AutomationControlled',
 					'--disable-dev-shm-usage',
 					'--disable-web-security',
 					'--disable-features=VizDisplayCompositor',
 					'--no-sandbox',
 				],
+			}
+			proxy = get_anyrouter_proxy()
+			if proxy:
+				launch_options['proxy'] = {'server': proxy}
+				print(f'[INFO] {account_name}: Using AnyRouter proxy {proxy}')
+
+			context = await p.chromium.launch_persistent_context(
+				**launch_options,
 			)
 
 			page = await context.new_page()
@@ -144,7 +158,7 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 			try:
 				print(f'[PROCESSING] {account_name}: Access login page to get initial cookies...')
 
-				await page.goto(login_url, wait_until='networkidle')
+				await page.goto(login_url, wait_until='domcontentloaded', timeout=60000)
 
 				try:
 					await page.wait_for_function('document.readyState === "complete"', timeout=5000)
@@ -326,7 +340,11 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 	if not all_cookies:
 		return False, None, None
 
-	client = httpx.Client(http2=True, timeout=30.0)
+	client_options = {'http2': True, 'timeout': 30.0}
+	proxy = get_anyrouter_proxy()
+	if proxy:
+		client_options['proxy'] = proxy
+	client = httpx.Client(**client_options)
 
 	try:
 		client.cookies.update(all_cookies)
