@@ -1188,11 +1188,22 @@ def _label_suspicious(text: str) -> bool:
 
 
 async def _count_login_form_inputs(page: Page) -> tuple[int, int]:
+	"""仅统计**可见且可填充**的输入框数量。
+	SPA登录成功后inputs通常从DOM移除或被隐藏，此时应该立即跳出登录循环。
+	"""
 	async def _cnt(sels) -> int:
 		cnt = 0
 		for s in sels:
 			try:
-				cnt += await page.locator(s).count()
+				loc = page.locator(s)
+				n = await loc.count()
+				for i in range(n):
+					try:
+						it = loc.nth(i)
+						if (await it.element_handle(timeout=500)) and (await it.is_visible()) and not (await it.is_disabled()):
+							cnt += 1
+					except Exception:  # nosec B112
+						pass
 			except Exception:  # nosec B112
 				pass
 		return cnt
