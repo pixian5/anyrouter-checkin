@@ -20,28 +20,62 @@ if TYPE_CHECKING:
 
 EMAIL_LOGIN_BUTTON_NAMES = (
 	re.compile(r'邮箱或用户名'),
+	re.compile(r'邮箱.*?登录'),
+	re.compile(r'用户名.*?登录'),
 	re.compile(r'使用.*邮箱'),
 	re.compile(r'Email or Username', re.I),
 	re.compile(r'Sign in with Email', re.I),
 	re.compile(r'Sign in with Email or Username', re.I),
+	re.compile(r'With Email', re.I),
+	re.compile(r'Login.*Email', re.I),
 )
 EMAIL_LOGIN_ENTRY_SELECTORS = (
 	'.semi-card button:has(.semi-icon-mail):not(form.semi-form button)',
 	'.semi-card button:has([aria-label="mail"]):not(form.semi-form button)',
 	'.semi-card button.semi-button-primary:has(.semi-icon-mail)',
 	'button:has(.semi-icon-mail):not(form.semi-form button)',
+	# 通用新 UI：蓝色主按钮或含图标的邮箱登录按钮，不在 form 内
+	'button[type="button"][class*="primary"]:not(form button)',
+	'button[class*="Primary"]:not(form button)',
+	'button[class*="Button"]:not(form button):has(svg)',
+	'[role="button"]:not(form [role="button"])',
 )
 LOGIN_PAGE_READY_SELECTORS = (
 	'.semi-card button:has(.semi-icon-mail)',
 	'.semi-card',
 	'button:has(.semi-icon-mail)',
+	'button:has(svg)',
+	'button',
 )
 LOGIN_FORM_SELECTOR = 'form.semi-form'
-USERNAME_SELECTORS = ('#username', 'input[name="username"]', 'input[name="email"]', 'input[type="email"]')
-PASSWORD_SELECTORS = ('#password', 'input[name="password"]', 'input[type="password"]')  # nosec B105
+USERNAME_SELECTORS = (
+	'#username',
+	'input[name="username"]',
+	'input[name="email"]',
+	'input[type="email"]',
+	'input[autocomplete="username"]',
+	'input[autocomplete="email"]',
+	'form input[type="text"]',
+	'form input:not([type="password"]):not([type="hidden"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"])',
+)
+PASSWORD_SELECTORS = (  # nosec B105
+	'#password',
+	'input[name="password"]',
+	'input[type="password"]',
+	'input[autocomplete="current-password"]',
+	'form input[type="password"]',
+)
 SUBMIT_SELECTORS = (
 	f'{LOGIN_FORM_SELECTOR} button[type="submit"]',
+	'form button[type="submit"]',
 	'button[type="submit"]',
+	'form button:last-child',
+	'form button[class*="primary" i]',
+	'form button[class*="Primary"]',
+	'form button:has-text("登录")',
+	'form button:has-text("登 录")',
+	'form button:has-text("Login")',
+	'button:has-text("登录"):not([type="button"])',
 )
 SESSION_COOKIE_NAME = 'session'
 USER_SELF_API_SUFFIX = '/api/user/self'
@@ -80,7 +114,10 @@ _SITE_READY_JS = f"""() => {{
 		if (rect && rect.width > 0 && rect.height > 0) return false;
 	}}
 	if (/\\/login/.test(location.pathname)) {{
-		return countVisible('.semi-card') > 0 || countVisible('#username') > 0 || countVisible('button') >= 2;
+		return countVisible('.semi-card') > 0
+			|| countVisible('#username') > 0
+			|| countVisible('input[type="password"]') > 0
+			|| countVisible('button') >= 2;
 	}}
 	return countVisible('a') > 0 || countVisible('button') > 0;
 }}"""
@@ -90,7 +127,10 @@ _LOGIN_SHELL_READY_JS = f"""() => {{
 	const text = document.body?.innerText || '';
 	const blocked = /请进行验证|为了更好的访问体验|访问受限|Access denied|verify you are human/i.test(text);
 	if (blocked) return false;
-	return countVisible('.semi-card') > 0 || countVisible('#username') > 0 || countVisible('button') >= 2;
+	return countVisible('.semi-card') > 0
+		|| countVisible('#username') > 0
+		|| countVisible('input[type="password"]') > 0
+		|| countVisible('button') >= 2;
 }}"""
 
 _OPEN_EMAIL_FORM_JS = """() => {
@@ -104,19 +144,38 @@ _OPEN_EMAIL_FORM_JS = """() => {
 		return rect.width > 0 && rect.height > 0;
 	};
 
+	const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+
 	const inDialog = (el) => !!el?.closest('[role="dialog"][aria-modal="true"], .semi-modal-content[role="dialog"]');
 
-	const usernameSelectors = ['#username', 'input[name="username"]', 'input[name="email"]', 'input[type="email"]'];
+	const usernameSelectors = [
+		'#username', 'input[name="username"]', 'input[name="email"]',
+		'input[type="email"]', 'input[autocomplete="username"]',
+		'input[autocomplete="email"]', 'form input[type="password"]',
+		'form input:not([type="password"]):not([type="hidden"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"])',
+	];
 	const findUsername = () => {
 		for (const selector of usernameSelectors) {
 			const el = document.querySelector(selector);
-			if (isVisible(el)) return el;
+			if (el && isVisible(el)) return el;
 		}
 		return null;
 	};
 
 	if (findUsername()) return true;
 
+	// 1) 语义匹配按钮文本：包含 邮箱/用户名/Email
+	const buttons = [...document.querySelectorAll('button, [role="button"]')]
+		.filter(b => isVisible(b) && !inDialog(b) && !b.closest('form'));
+	const textRx = /邮箱|用户名|Email|Username|使用.*?登录|Sign.*?in.*?with/i;
+	for (const btn of buttons) {
+		const txt = norm(btn.innerText || btn.textContent);
+		if (!textRx.test(txt)) continue;
+		btn.click();
+		if (findUsername()) return true;
+	}
+
+	// 2) Semi Design 旧选择器
 	const entrySelectors = [
 		'.semi-card button:has(.semi-icon-mail)',
 		'.semi-card button:has([aria-label="mail"])',
@@ -129,7 +188,21 @@ _OPEN_EMAIL_FORM_JS = """() => {
 		}
 	}
 
-	for (const tab of document.querySelectorAll('.semi-card .semi-tabs-tab')) {
+	// 3) 按颜色/主按钮样式猜（primary），最后再试
+	const primaries = [...document.querySelectorAll('button[class*="primary" i], button[class*="Primary"]')]
+		.filter(b => isVisible(b) && !inDialog(b) && !b.closest('form'));
+	for (const btn of primaries) {
+		const txt = norm(btn.innerText || btn.textContent);
+		// 排除 GitHub/LinuxDO 等第三方按钮，优先点含 邮箱/登录 字样的
+		const githublike = /github|linuxdo|google|gitlab|twitter|discord|wechat|apple/i.test(txt);
+		if (githublike) continue;
+		if (!/邮箱|用户名|Email|登录|Login|Sign/i.test(txt)) continue;
+		btn.click();
+		if (findUsername()) return true;
+	}
+
+	// 4) Tabs 切换
+	for (const tab of document.querySelectorAll('.semi-card .semi-tabs-tab, [role="tab"], [class*="Tabs"] [role="button"]')) {
 		if (!isVisible(tab) || inDialog(tab)) continue;
 		tab.click();
 		if (findUsername()) return true;
@@ -550,13 +623,26 @@ async def _click_email_login_entry(page: Page) -> bool:
 			button = buttons.nth(index)
 			try:
 				if await button.is_visible():
+					# 跳过第三方登录按钮（GitHub / LinuxDO 等）
+					try:
+						txt = (await button.inner_text(timeout=2000) or '').replace(r'\s+', ' ').strip()
+					except Exception:  # nosec B110
+						txt = ''
+					if re.search(r'github|linuxdo|google|gitlab|twitter|discord|wechat|apple', txt, re.I):
+						continue
+					if not re.search(r'邮箱|用户名|Email|Username|登录|Login|Sign', txt, re.I):
+						# Semi Design 图标按钮可能无文字，仍尝试点击（.semi-icon-mail 路径）
+						if not re.search(r'semi-icon-mail|aria-label.*mail|aria-label.*email',
+						                 await button.evaluate('el => el.outerHTML.slice(0, 500)') or '',
+						                 re.I):
+							continue
 					if await _click_locator(button):
 						return True
 			except Exception:  # nosec B112
 				continue
 
 	for pattern in EMAIL_LOGIN_BUTTON_NAMES:
-		for scope in (page.locator('.semi-card'), page):
+		for scope in (page.locator('.semi-card'), page.locator('main'), page.locator('[class*="Login"]'), page):
 			try:
 				button = scope.get_by_role('button', name=pattern).first
 				if await button.is_visible() and await _click_locator(button):
@@ -590,19 +676,34 @@ async def _log_login_page_state(page: Page) -> None:
 				const rect = el.getBoundingClientRect();
 				return rect.width > 0 && rect.height > 0;
 			};
-			const buttons = [...document.querySelectorAll('button')]
+			const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+			const buttons = [...document.querySelectorAll('button, [role="button"]')]
 				.filter(isVisible)
-				.map((b) => (b.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 60));
+				.map((b) => norm(b.innerText || b.textContent || ''));
+			const inputs = [...document.querySelectorAll('input')]
+				.filter(isVisible)
+				.map((i) => ({
+					type: i.type || '',
+					name: i.name || '',
+					id: i.id || '',
+					auto: i.getAttribute('autocomplete') || '',
+					placeholder: (i.getAttribute('placeholder') || '').slice(0, 40),
+				}));
+			const modals = [...document.querySelectorAll('[aria-modal="true"], [role="dialog"]')]
+				.filter(isVisible).length;
 			return {
 				title: document.title || '',
 				readyState: document.readyState,
-				bodySnippet: (document.body?.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 300),
+				url: location.pathname,
+				bodySnippet: norm(document.body?.innerText || '').slice(0, 300),
 				scriptCount: document.querySelectorAll('script').length,
 				hasSemiCard: !!document.querySelector('.semi-card'),
 				mailEntryCount: document.querySelectorAll('.semi-card button:has(.semi-icon-mail)').length,
 				usernameVisible: isVisible(document.querySelector('#username')),
-				modalVisible: [...document.querySelectorAll('div[role="dialog"][aria-modal="true"]')].some(isVisible),
-				buttons: buttons.slice(0, 8),
+				passwordVisible: isVisible(document.querySelector('input[type="password"]')),
+				modalVisible: modals,
+				buttons: buttons.slice(0, 12),
+				inputs: inputs.slice(0, 8),
 			};
 		}"""
 	)

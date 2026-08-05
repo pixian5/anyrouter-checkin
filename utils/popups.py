@@ -11,7 +11,8 @@ if TYPE_CHECKING:
 
 _MODAL_SELECTOR = 'div[role="dialog"][aria-modal="true"]'
 _CLOSE_ANNOUNCEMENT = re.compile(r'关闭公告|Close Notice', re.I)
-_DISMISS_TODAY = re.compile(r'今日关闭|Close Today', re.I)
+_DISMISS_TODAY = re.compile(r'今日关闭|Close Today|今.*?关闭', re.I)
+_GENERIC_CLOSE = re.compile(r'^\s*关闭\s*$|^\s*Close\s*$', re.I)
 
 _DISMISS_MODALS_CORE_JS = """
 	const isVisible = (el) => {
@@ -31,6 +32,8 @@ _DISMISS_MODALS_CORE_JS = """
 		'div.semi-modal[role="dialog"]',
 		'div.semi-modal[aria-modal="true"]',
 		'div.semi-modal-wrap',
+		'[class*="Modal"] [role="dialog"]',
+		'[class*="modal"] [role="dialog"]',
 	];
 
 	const closeSelectors = [
@@ -41,6 +44,11 @@ _DISMISS_MODALS_CORE_JS = """
 		'.semi-modal-footer button.semi-button-primary',
 		'.semi-modal-footer button:last-child',
 		'.semi-modal-footer button',
+		'button[aria-label*="close" i]',
+		'[class*="Modal"] button[aria-label*="close" i]',
+		'[class*="modal"] button[aria-label*="close" i]',
+		'[class*="ModalHeader"] button',
+		'[class*="modal-header"] button',
 	];
 
 	const findRoots = () => {
@@ -49,6 +57,12 @@ _DISMISS_MODALS_CORE_JS = """
 			roots.push(portal);
 		}
 		return roots;
+	};
+
+	const matchText = (btn, rx) => {
+		if (!btn) return false;
+		const txt = (btn.innerText || btn.textContent || '').replace(/\s+/g, ' ').trim();
+		return rx.test(txt);
 	};
 
 	const findModals = () => {
@@ -62,6 +76,13 @@ _DISMISS_MODALS_CORE_JS = """
 						seen.add(el);
 						modals.push(el);
 					}
+				}
+			}
+			// 通用兜底：任何带 aria-modal 的最外层元素
+			for (const el of root.querySelectorAll('[aria-modal="true"]')) {
+				if (isVisible(el) && !seen.has(el)) {
+					seen.add(el);
+					modals.push(el);
 				}
 			}
 		}
@@ -80,6 +101,8 @@ _DISMISS_MODALS_CORE_JS = """
 		'input[type="email"]',
 		'input[type="password"]',
 		'#password',
+		'form input[type="password"]',
+		'form input[type="email"]',
 	];
 
 	const hasLoginFields = (root) => {
@@ -92,17 +115,46 @@ _DISMISS_MODALS_CORE_JS = """
 	};
 
 	const findCloseButton = (modal) => {
+		// 1) 语义按钮文本优先：今日关闭 > 关闭公告 > 关闭
+		const buttons = [...modal.querySelectorAll('button')].filter(isVisible);
+		const rxToday = /今日关闭|Close Today|今.*?关闭/i;
+		const rxClose = /关闭公告|Close Notice/i;
+		const rxGeneric = /^\s*关闭\s*$|^\s*Close\s*$/i;
+		for (const btn of buttons) {
+			if (rxToday.test((btn.innerText || '').replace(/\s+/g, ' ').trim())) return btn;
+		}
+		for (const btn of buttons) {
+			if (rxClose.test((btn.innerText || '').replace(/\s+/g, ' ').trim())) return btn;
+		}
+		for (const btn of buttons) {
+			if (rxGeneric.test((btn.innerText || '').replace(/\s+/g, ' ').trim())) return btn;
+		}
+		// 2) 选择器兜底
 		for (const selector of closeSelectors) {
 			const btn = modal.querySelector(selector);
 			if (btn && isVisible(btn)) return btn;
+		}
+		// 3) 按位置：右上角（小尺寸，≤40px，通常是×）
+		const small = buttons.filter(b => {
+			const r = b.getBoundingClientRect();
+			return r.width > 0 && r.width <= 40 && r.height > 0 && r.height <= 40;
+		});
+		if (small.length === 1) return small[0];
+		if (buttons.length > 0 && small.length > 0) {
+			small.sort((a, b) => (a.getBoundingClientRect().left - b.getBoundingClientRect().left));
+			// 最右侧的最小按钮
+			small.reverse();
+			return small[0];
 		}
 		return null;
 	};
 
 	const dismissPortalButtons = () => {
 		let closed = 0;
-		for (const portal of document.querySelectorAll('div.semi-portal')) {
-			if (!isVisible(portal) || hasLoginFields(portal)) continue;
+		const portals = [...document.querySelectorAll('div.semi-portal')];
+		// 任何可能包含弹窗的容器
+		for (const portal of portals.length ? portals : [document.body]) {
+			if (!portal || !isVisible(portal) || hasLoginFields(portal)) continue;
 			for (const selector of closeSelectors) {
 				for (const btn of portal.querySelectorAll(selector)) {
 					if (isVisible(btn)) {
@@ -185,7 +237,7 @@ async def setup_popup_guard(page: Page) -> None:
 
 
 async def _dismiss_popups_playwright(page: Page) -> int:
-	"""通过 Playwright 定位 Semi 公告弹窗并关闭。"""
+	"""通过 Playwright 定位弹窗并关闭（新旧 UI 兼容）。"""
 	closed = 0
 
 	for _ in range(5):
@@ -200,33 +252,60 @@ async def _dismiss_popups_playwright(page: Page) -> int:
 				continue
 
 		if not visible_indices:
-			break
+			# 兜底：任何 aria-modal=true
+			modals = page.locator('[aria-modal="true"]')
+			modal_count = await modals.count()
+			for index in range(modal_count):
+				try:
+					if await modals.nth(index).is_visible():
+						visible_indices.append(index)
+				except Exception:  # nosec B112
+					continue
+			if not visible_indices:
+				break
 
 		round_closed = False
 		for index in reversed(visible_indices):
 			modal = modals.nth(index)
 			try:
-				if await modal.locator('form.semi-form, #username, input[type="password"]').count() > 0:
+				has_form = await modal.locator(
+					'form.semi-form, #username, input[type="password"], form input[type="email"], form input[type="password"]'
+				).count()
+				if has_form > 0:
 					continue
 			except Exception:  # nosec B110
 				pass
-			for pattern in (_CLOSE_ANNOUNCEMENT, _DISMISS_TODAY):
-				button = modal.get_by_role('button', name=pattern).first
+
+			# 语义按钮优先：今日关闭 > 关闭公告 > 通用关闭
+			clicked = False
+			for pattern in (_DISMISS_TODAY, _CLOSE_ANNOUNCEMENT, _GENERIC_CLOSE):
 				try:
+					button = modal.get_by_role('button', name=pattern).first
 					if await button.is_visible():
 						await button.click(timeout=3000)
 						closed += 1
 						round_closed = True
+						clicked = True
 						break
 				except Exception:  # nosec B112
 					continue
-			else:
-				close_button = modal.locator('button.semi-modal-close, button[aria-label="close"]').first
+			if clicked:
+				continue
+
+			# 通用关闭
+			for sel in (
+				'button.semi-modal-close',
+				'button[aria-label="close" i]',
+				'[class*="Modal"] button[aria-label="close" i]',
+				'[class*="ModalHeader"] button',
+			):
+				close_button = modal.locator(sel).first
 				try:
 					if await close_button.is_visible():
 						await close_button.click(timeout=3000)
 						closed += 1
 						round_closed = True
+						break
 				except Exception:  # nosec B110
 					pass
 
