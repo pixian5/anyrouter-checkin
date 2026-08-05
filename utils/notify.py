@@ -1,7 +1,7 @@
 import os
 import smtplib
 from email.mime.text import MIMEText
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 
@@ -30,6 +30,35 @@ class NotificationKit:
 		self.bark_key = os.getenv('BARK_KEY')
 		self.bark_server = os.getenv('BARK_SERVER', 'https://api.day.app')
 
+	def _post_json(self, service: str, url: str, data: dict[str, Any]) -> httpx.Response:
+		with httpx.Client(timeout=30.0) as client:
+			response = client.post(url, json=data)
+
+		if response.status_code >= 400:
+			raise RuntimeError(f'{service} request failed: HTTP {response.status_code}')
+
+		try:
+			payload = response.json()
+		except ValueError:
+			return response
+
+		if not isinstance(payload, dict):
+			return response
+
+		error_msg = payload.get('errmsg') or payload.get('message') or payload.get('msg') or payload.get('error')
+		if payload.get('ok') is False:
+			raise RuntimeError(f'{service} request failed: {error_msg or payload.get("description") or "ok=false"}')
+		if payload.get('errcode') not in (None, 0):
+			raise RuntimeError(f'{service} request failed: {error_msg or payload.get("errcode")}')
+		if payload.get('StatusCode') not in (None, 0):
+			raise RuntimeError(f'{service} request failed: {error_msg or payload.get("StatusCode")}')
+		if payload.get('code') not in (None, 0, 200):
+			raise RuntimeError(f'{service} request failed: {error_msg or payload.get("code")}')
+		if payload.get('ret') not in (None, 0, 1, 200):
+			raise RuntimeError(f'{service} request failed: {error_msg or payload.get("ret")}')
+
+		return response
+
 	def send_email(self, title: str, content: str, msg_type: Literal['text', 'html'] = 'text'):
 		self.reload_from_env()
 		if not self.email_user or not self.email_pass or not self.email_to:
@@ -56,8 +85,7 @@ class NotificationKit:
 			raise ValueError('PushPlus Token not configured')
 
 		data = {'token': self.pushplus_token, 'title': title, 'content': content, 'template': 'html'}
-		with httpx.Client(timeout=30.0) as client:
-			client.post('http://www.pushplus.plus/send', json=data)
+		self._post_json('PushPlus', 'http://www.pushplus.plus/send', data)
 
 	def send_serverPush(self, title: str, content: str):
 		self.reload_from_env()
@@ -65,8 +93,7 @@ class NotificationKit:
 			raise ValueError('Server Push key not configured')
 
 		data = {'title': title, 'desp': content}
-		with httpx.Client(timeout=30.0) as client:
-			client.post(f'https://sctapi.ftqq.com/{self.server_push_key}.send', json=data)
+		self._post_json('Server Push', f'https://sctapi.ftqq.com/{self.server_push_key}.send', data)
 
 	def send_dingtalk(self, title: str, content: str):
 		self.reload_from_env()
@@ -74,8 +101,7 @@ class NotificationKit:
 			raise ValueError('DingTalk Webhook not configured')
 
 		data = {'msgtype': 'text', 'text': {'content': f'{title}\n{content}'}}
-		with httpx.Client(timeout=30.0) as client:
-			client.post(self.dingding_webhook, json=data)
+		self._post_json('DingTalk', self.dingding_webhook, data)
 
 	def send_feishu(self, title: str, content: str):
 		self.reload_from_env()
@@ -89,8 +115,7 @@ class NotificationKit:
 				'header': {'template': 'blue', 'title': {'content': title, 'tag': 'plain_text'}},
 			},
 		}
-		with httpx.Client(timeout=30.0) as client:
-			client.post(self.feishu_webhook, json=data)
+		self._post_json('Feishu', self.feishu_webhook, data)
 
 	def send_wecom(self, title: str, content: str):
 		self.reload_from_env()
@@ -98,8 +123,7 @@ class NotificationKit:
 			raise ValueError('WeChat Work Webhook not configured')
 
 		data = {'msgtype': 'text', 'text': {'content': f'{title}\n{content}'}}
-		with httpx.Client(timeout=30.0) as client:
-			client.post(self.weixin_webhook, json=data)
+		self._post_json('WeChat Work', self.weixin_webhook, data)
 
 	def send_gotify(self, title: str, content: str):
 		self.reload_from_env()
@@ -115,8 +139,7 @@ class NotificationKit:
 		data = {'title': title, 'message': content, 'priority': priority}
 
 		url = f'{self.gotify_url}?token={self.gotify_token}'
-		with httpx.Client(timeout=30.0) as client:
-			client.post(url, json=data)
+		self._post_json('Gotify', url, data)
 
 	def send_telegram(self, title: str, content: str):
 		self.reload_from_env()
@@ -126,8 +149,7 @@ class NotificationKit:
 		message = f'<b>{title}</b>\n\n{content}'
 		data = {'chat_id': self.telegram_chat_id, 'text': message, 'parse_mode': 'HTML'}
 		url = f'https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage'
-		with httpx.Client(timeout=30.0) as client:
-			client.post(url, json=data)
+		self._post_json('Telegram', url, data)
 
 	def send_bark(self, title: str, content: str):
 		self.reload_from_env()
@@ -145,8 +167,7 @@ class NotificationKit:
 			'group': 'AnyRouter',
 		}
 
-		with httpx.Client(timeout=30.0) as client:
-			client.post(url, json=data)
+		self._post_json('Bark', url, data)
 
 	def push_message(self, title: str, content: str, msg_type: Literal['text', 'html'] = 'text'):
 		notifications = [
