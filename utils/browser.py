@@ -910,6 +910,30 @@ _SUBMIT_LABELS = (
 )
 
 
+_SUBMIT_NEGATIVE = (
+	re.compile(r'忘记|重置|找回', re.I),
+	re.compile(r'forgot|reset|recover|resend', re.I),
+	re.compile(r'注册|signup|sign\s*up|新用户|创建账号', re.I),
+	re.compile(r'register|create.*account|join\s*now', re.I),
+	re.compile(r'切换|换一|换个|其他方式|其他登录|切换到', re.I),
+	re.compile(r'微信|wechat|apple|google|github|linuxdo|qrcode|qr|扫码', re.I),
+	re.compile(r'取消|cancel|关闭|close|稍后|later', re.I),
+	re.compile(r'显示密码|隐藏密码|toggle.*password|眼睛|可见|不可见|显示', re.I),
+)
+
+
+def _label_suspicious(text: str) -> bool:
+	if not text:
+		return False
+	t = re.sub(r'\s+', ' ', text).strip()
+	if not t:
+		return False
+	for rx in _SUBMIT_NEGATIVE:
+		if rx.search(t):
+			return True
+	return False
+
+
 async def _count_login_form_inputs(page: Page) -> tuple[int, int]:
 	async def _cnt(sels) -> int:
 		cnt = 0
@@ -923,14 +947,46 @@ async def _count_login_form_inputs(page: Page) -> tuple[int, int]:
 
 
 async def _submit_happened(page_before_url: str, page_after_url: str, inputs_before: tuple[int, int], inputs_after: tuple[int, int]) -> bool:
-	"""判断点击提交按钮后是否真的触发了提交/跳转/表单变化。"""
+	"""判断点击提交按钮后是否真的触发了提交/跳转/表单变化；但要排除跳错页（如/reset、/register）。"""
 	if page_after_url != page_before_url:
 		return True
 	if inputs_before[0] > 0 and inputs_after[0] == 0:
-		return True  # 表单消失了
+		return True
 	if inputs_after[1] < inputs_before[1]:
 		return True
 	return False
+
+
+def _submit_destination_ok(origin_url: str, current_url: str) -> bool:
+	"""按钮点击后跳转到的 URL 是否在"预期方向"。允许 /console、/dashboard、原 login 页本身（表单在处理），禁止 /reset/register 等。"""
+	from urllib.parse import urlparse
+	o = urlparse(origin_url)
+	c = urlparse(current_url)
+	# 域名或协议变了 -> 一般是正确外部 OAuth 重定向（我们不用），先允许
+	if (o.scheme, o.netloc) != (c.scheme, c.netloc):
+		return True
+	path = c.path.rstrip('/')
+	origin_path = o.path.rstrip('/')
+	if path == origin_path:
+		return True
+	# 允许跳转到控制台、首页、仪表板、API 调用后的回跳
+	if path in ('', '/', CONSOLE_PATH.rstrip('/'), '/dashboard', '/app', '/home', '/user', '/account'):
+		return True
+	if path.startswith(CONSOLE_PATH.rstrip('/')) or path.startswith('/dashboard') or path.startswith('/app'):
+		return True
+	# 如果路径名是 /login/xxx 也允许（login 子路径）
+	if path.startswith(origin_path + '/'):
+		return True
+	# 负向：/reset /forgot /register /signup /signup/invite 等一律禁止
+	NEG_PATHS = (
+		'/reset', '/forgot', '/recover', '/password-reset', '/password_reset',
+		'/register', '/signup', '/sign-up', '/join', '/invite', '/verify',
+	)
+	low = path.lower()
+	for n in NEG_PATHS:
+		if low.startswith(n):
+			return False
+	return True
 
 
 async def submit_login_form(page: Page, timeout_ms: int) -> None:
@@ -939,26 +995,55 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 	baseline_inputs = await _count_login_form_inputs(page)
 	already_tried: list[Locator] = []
 
-	async def _try_click(submit: Locator, scope: str) -> bool:
-		# Skip duplicate candidates
+	async def _candidate_skip(submit: Locator) -> str | None:
+		"""如果候选按钮不应被点，返回原因文本；否则返回 None。"""
+		try:
+			if not await submit.is_visible():
+				return 'not visible'
+		except Exception:
+			return 'is_visible failed'
+		# 重复检查
 		for t in already_tried:
 			try:
 				if await submit.evaluate('(a, b) => a === b', t):
-					return False
+					return 'duplicate'
 			except Exception:  # nosec B112
 				pass
-		already_tried.append(submit)
-
-		# Sanity: make sure button is interactable; otherwise skip
+		# disabled 检查
 		try:
-			if not await submit.is_visible():
-				return False
-			disabled = await submit.evaluate('el => !!el.closest?.(\"[disabled], [aria-disabled=\"true\"]\") || !!el.disabled || el.getAttribute?.(\"aria-disabled\") === \"true\"')
+			disabled = await submit.evaluate(
+				'el => !!el.closest?.("[disabled], [aria-disabled=\"true\"]") || !!el.disabled || el.getAttribute?.("aria-disabled") === "true"'
+			)
 			if disabled:
-				return False
+				return 'disabled'
 		except Exception:  # nosec B110
 			pass
+		# 文本负向过滤：通过 innerText + aria-label + 候选按钮的 content 检查
+		try:
+			text_parts = []
+			try:
+				text_parts.append(await submit.inner_text(timeout=1500) or '')
+			except Exception:
+				pass
+			for attr in ('aria-label', 'title', 'value', 'placeholder'):
+				try:
+					v = await submit.get_attribute(attr)
+					if v:
+						text_parts.append(v)
+				except Exception:
+					pass
+			joined = ' '.join(text_parts)
+			if _label_suspicious(joined):
+				return f'suspicious label: {joined[:120]!r}'
+		except Exception:  # nosec B110
+			pass
+		return None
 
+	async def _try_click(submit: Locator) -> tuple[bool, str]:
+		skip_reason = await _candidate_skip(submit)
+		if skip_reason is not None:
+			return False, skip_reason
+		already_tried.append(submit)
 		try:
 			await submit.scroll_into_view_if_needed()
 			await submit.click(timeout=action_timeout)
@@ -975,6 +1060,7 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 					except Exception:  # nosec B110
 						pass
 		# 等待页面是否有反应
+		changed = False
 		try:
 			await asyncio.wait_for(
 				page.wait_for_function(
@@ -998,15 +1084,27 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 				),
 				timeout=9,
 			)
-			return True
+			changed = True
 		except Exception:  # nosec B110
-			# 8秒没变化，看看是否已经开始网络请求跳转了
 			try:
-				return page.url != baseline_url
+				changed = page.url != baseline_url
 			except Exception:
-				return False
+				changed = False
+		# 如果 URL 错了（跳到 /reset 等），立刻回退
+		if changed and not _submit_destination_ok(baseline_url, page.url):
+			bad_url = page.url
+			try:
+				await page.go_back(wait_until='domcontentloaded', timeout=10000)
+			except Exception:  # nosec B110
+				try:
+					await page.goto(baseline_url, wait_until='domcontentloaded', timeout=15000)
+				except Exception:  # nosec B110
+					pass
+			await asyncio.sleep(1.5)
+			return False, f'navigated to bad URL {bad_url}, went back'
+		return changed, 'clicked'
 
-	# 1) 优先按语义文本找按钮
+	# 收集所有候选：先 role，后 selector
 	candidates: list[Locator] = []
 	for pattern in _SUBMIT_LABELS:
 		for scope in (page.locator('form'), page):
@@ -1014,20 +1112,18 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 				candidates.append(scope.get_by_role('button', name=pattern).first)
 			except Exception:  # nosec B112
 				pass
+	for selector in SUBMIT_SELECTORS:
+		try:
+			candidates.append(page.locator(selector).first)
+		except Exception:  # nosec B112
+			pass
+
 	for loc in candidates:
-		if await _try_click(loc, 'role'):
+		ok, reason = await _try_click(loc)
+		if ok:
 			break
-
-	# 2) 回退到 CSS 选择器
-	if not await _submit_happened(baseline_url, page.url, baseline_inputs, await _count_login_form_inputs(page)):
-		for selector in SUBMIT_SELECTORS:
-			locator = page.locator(selector).first
-			if await _try_click(locator, f'sel:{selector}'):
-				if await _submit_happened(baseline_url, page.url, baseline_inputs, await _count_login_form_inputs(page)):
-					break
-
-	# 3) 兜底：如果还没变化，密码框 Enter 提交
-	if not await _submit_happened(baseline_url, page.url, baseline_inputs, await _count_login_form_inputs(page)):
+	else:
+		# 全部候选失败，最后兜底：密码框 + Enter
 		pw = await _first_visible_locator(page, PASSWORD_SELECTORS)
 		if pw is not None:
 			try:
@@ -1038,11 +1134,17 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 				pass
 
 	current_inputs = await _count_login_form_inputs(page)
-	if not await _submit_happened(baseline_url, page.url, baseline_inputs, current_inputs) and current_inputs[0] > 0:
-		# 候选全部点了但页面完全没变化
+	happened = _submit_happened(baseline_url, page.url, baseline_inputs, current_inputs)
+	dest_ok = _submit_destination_ok(baseline_url, page.url)
+	if current_inputs[0] > 0 and happened and not dest_ok:
 		raise TimeoutError(
-			f'Submit button click failed: tried {len(already_tried)} candidates but URL/form unchanged. '
-			f'Inputs before={baseline_inputs} after={current_inputs}'
+			f'Submit failed: navigated to bad destination {page.url!r} (expected login/console). '
+			f'Tried {len(already_tried)} candidates.'
+		)
+	if current_inputs[0] > 0 and not happened:
+		raise TimeoutError(
+			f'Submit button click failed: tried {len(already_tried)} candidates, '
+			f'URL/form unchanged. Inputs before={baseline_inputs} after={current_inputs}'
 		)
 
 	await _wait_for_optional_load_state(page, 'domcontentloaded', action_timeout)
