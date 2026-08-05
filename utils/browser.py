@@ -548,6 +548,80 @@ async def wait_for_logged_in(page: Page, timeout_ms: int = SESSION_WAIT_TIMEOUT_
 	return False
 
 
+async def _dump_login_error_context(page: Page, label: str = '') -> None:
+	"""When login fails, extract and log any error messages from the page.
+	Collects:
+	- any visible text containing 错误/失败/成功/验证/验证码/密码/邮箱/Error/Fail/Wrong/Invalid/Captcha/Verify
+	- any element with reddish color (color or backgroundColor contains red-ish)
+	- any aria-live messages
+	"""
+	try:
+		report = await page.evaluate(
+			r"""() => {
+				const isVisible = (el) => {
+					if (!el || !el.isConnected) return false;
+					const s = window.getComputedStyle(el);
+					if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) return false;
+					const r = el.getBoundingClientRect();
+					return r.width > 0 && r.height > 0;
+				};
+				const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+				const colorReddish = (c) => {
+					if (!c) return false;
+					const m = /rgba?\(\s*(\d+)[, ]+(\d+)[, ]+(\d+)/i.exec(c);
+					if (!m) return false;
+					const r = +m[1], g = +m[2], b = +m[3];
+					// Red channel >= 140 and dominant
+					return r >= 140 && r > g + 30 && r > b + 30;
+				};
+				const ERR_KEYWORDS = /错误|失败|不正确|不匹配|不存在|无效|过期|禁用|锁定|验证码|人机|验证|邮箱|密码|用户名|登录|Error|Fail|Wrong|Invalid|Incorrect|Disabled|Locked|Captcha|Verify|Verification|Required|Unauthorized|Forbidden|429|rate|limit/i;
+				const all = [...document.querySelectorAll('*')].filter(isVisible);
+				const matches = [];
+				for (const el of all) {
+					const t = norm(el.innerText || el.textContent || '');
+					if (!t) continue;
+					if (t.length > 160) continue;
+					const s = window.getComputedStyle(el);
+					const tagMatch = /^(div|span|p|li|label|strong|b|em|h[1-6]|a|button)$/i.test(el.tagName || '');
+					if (!tagMatch) continue;
+					let score = 0;
+					if (ERR_KEYWORDS.test(t)) score += 5;
+					if (colorReddish(s.color)) score += 4;
+					if (colorReddish(s.backgroundColor)) score += 2;
+					if (/(error|fail|warn|alert|danger|invalid|message|toast|notice|hint|tip|helper|feedback)/i.test(el.className || '')) score += 3;
+					if (el.getAttribute && (el.getAttribute('role') === 'alert' || el.getAttribute('aria-live'))) score += 4;
+					if (score < 3) continue;
+					matches.push({text: t, score, tag: el.tagName, cls: (el.className || '').toString().slice(0,100), id: el.id || '', color: s.color, bg: s.backgroundColor, role: el.getAttribute && el.getAttribute('role'), live: el.getAttribute && el.getAttribute('aria-live')});
+				}
+				matches.sort((a,b) => b.score - a.score);
+				return {
+					url: location.href,
+					title: document.title,
+					path: location.pathname,
+					candidateMatches: matches.slice(0, 12),
+					bodySnippet: norm(document.body?.innerText || '').slice(0, 400),
+					consoleMessages: typeof window.__loginConsoleLog === 'object' ? (window.__loginConsoleLog || []).slice(-15) : [],
+					forms: [...document.querySelectorAll('form')].map((f, i) => ({
+						index: i,
+						action: f.action || '',
+						method: f.method || '',
+						inputs: [...f.querySelectorAll('input')].map(inp => ({
+							name: inp.name || inp.id || '',
+							type: inp.type || '',
+							placeholder: (inp.getAttribute('placeholder') || '').slice(0,60),
+							hasValue: !!(inp.value && inp.value.length),
+							disabled: inp.disabled || inp.getAttribute('aria-disabled') === 'true',
+							errors: Array.from(inp.classList || []).filter(c => /error|invalid/i.test(c)).join(','),
+						})),
+					})),
+				};
+			}"""
+		)
+		debug_print(f'[DIAG] Login error context ({label}): {report!r:.2400}')
+	except Exception as e:  # nosec B112
+		debug_print(f'[DIAG] Failed to dump error context: {e!r:.160}')
+
+
 async def verify_browser_login(page: Page, console_url: str, timeout_ms: int) -> dict | None:
 	"""跳转 /console 并拦截 /api/user/self，用浏览器会话确认登录用户。"""
 	verify_timeout = min(timeout_ms, SESSION_WAIT_TIMEOUT_MS)
@@ -558,10 +632,37 @@ async def verify_browser_login(page: Page, console_url: str, timeout_ms: int) ->
 		nonlocal captured_profile
 		if captured_profile is not None:
 			return
-		profile = await _parse_user_self_response(response)
-		if profile:
-			captured_profile = profile
-			verified.set()
+		try:
+			profile = await _parse_user_self_response(response)
+			if profile:
+				captured_profile = profile
+				verified.set()
+				return
+		except Exception:  # nosec B112
+			pass
+		# Also capture any /login /auth /signin /session 4xx responses for debugging
+		try:
+			url = response.url
+			if not any(k in url.lower() for k in ('login', 'auth', 'signin', 'session', 'oauth', 'password', 'forgot', 'reset')):
+				return
+			status = response.status
+			if status < 400:
+				return
+			content_type = ''
+			try:
+				content_type = response.headers.get('content-type', '') or ''
+			except Exception:  # nosec B112
+				pass
+			if 'json' in content_type.lower() or 'text' in content_type.lower():
+				snippet = '<unavailable>'
+				try:
+					text = await response.text()
+					snippet = text[:500]
+				except Exception:  # nosec B112
+					snippet = '<body read failed>'
+				debug_print(f'[DIAG] Auth failed response: url={url!r} status={status} body={snippet!r}')
+		except Exception:  # nosec B112
+			pass
 
 	page.on('response', on_response)
 	try:
@@ -594,6 +695,7 @@ async def verify_browser_login(page: Page, console_url: str, timeout_ms: int) ->
 	else:
 		debug_print(f'[WARN] Login verification failed: current URL={page.url}')
 		print('[WARN] Login verification failed')
+	await _dump_login_error_context(page, 'verify_browser_login failed')
 	return None
 
 
@@ -1370,6 +1472,10 @@ async def login_with_email_form(
 				break
 		else:
 			no_progress_count = 0
+
+	# Capture failure context if still not logged in before waiting
+	if not await is_logged_in(page):
+		await _dump_login_error_context(page, f'after {rounds} login rounds, not logged in yet')
 
 	# After all rounds, ensure we wait for login state (cookie set / redirect to console)
 	await wait_for_logged_in(page, SESSION_WAIT_TIMEOUT_MS)
