@@ -627,16 +627,51 @@ async def _dismiss_blocking_overlays(page: Page) -> None:
 
 
 async def _click_locator(button: Locator) -> bool:
-	try:
+	# 收集所有点击方式，逐个尝试：普通click、force click、键盘Enter/Space、JS dispatch
+	strategies: list[tuple[str, Callable[[], Awaitable[None]]]] = []
+	async def _normal():
 		await button.scroll_into_view_if_needed()
 		await button.click(timeout=FORM_ACTION_TIMEOUT_MS)
-		return True
-	except Exception:
+	async def _force():
+		await button.scroll_into_view_if_needed()
+		await button.click(force=True, timeout=FORM_ACTION_TIMEOUT_MS)
+	async def _focus_enter():
+		await button.scroll_into_view_if_needed()
+		await button.focus()
+		await button.page.keyboard.press('Enter')
+	async def _focus_space():
+		await button.scroll_into_view_if_needed()
+		await button.focus()
+		await button.page.keyboard.press(' ')
+	async def _js_dispatch():
+		await button.evaluate(
+			"""el => {
+				// fire a sequence of trusted-like events
+				const fire = (t, opts = {}) => {
+					const ev = new MouseEvent(t, Object.assign({bubbles: true, cancelable: true, view: window, button: 0, buttons: 1}, opts));
+					el.dispatchEvent(ev);
+				};
+				fire('mouseover'); fire('mousemove'); fire('mousedown');
+				fire('mouseup'); fire('click');
+				if (typeof el.click === 'function') { try { el.click(); } catch {} }
+			}"""
+		)
+	strategies.append(('normal', _normal))
+	strategies.append(('force', _force))
+	strategies.append(('focus+Enter', _focus_enter))
+	strategies.append(('focus+Space', _focus_space))
+	strategies.append(('dispatchEvent', _js_dispatch))
+
+	errs: list[str] = []
+	for name, fn in strategies:
 		try:
-			await button.click(force=True, timeout=FORM_ACTION_TIMEOUT_MS)
+			await fn()
 			return True
-		except Exception:  # nosec B112
-			return False
+		except Exception as e:  # nosec B112
+			errs.append(f'{name}: {e!r:.120}')
+			continue
+	debug_print(f'[WARN] _click_locator all strategies failed: {errs}')
+	return False
 
 
 async def _wait_for_login_page_ready(page: Page, timeout_ms: int) -> None:
@@ -664,40 +699,132 @@ async def _wait_for_login_page_ready(page: Page, timeout_ms: int) -> None:
 
 
 async def _click_email_login_entry(page: Page) -> bool:
+	# 策略 0：最优先用语义化文本匹配（最准）
+	debug_print('[INFO] _click_email_login_entry: running semantic (role=button) matching first')
+	for pattern in EMAIL_LOGIN_BUTTON_NAMES:
+		for scope_name, scope in (
+			('login_card', page.locator('[class*="card" i]')),
+			('login_main', page.locator('main')),
+			('login_page', page.locator('[class*="login" i]')),
+			('page', page),
+		):
+			try:
+				candidate = scope.get_by_role('button', name=pattern).first
+				if not await candidate.is_visible():
+					continue
+				# 负向过滤：第三方
+				try:
+					txt = (await candidate.inner_text(timeout=1500) or '').replace(r'\s+', ' ').strip()
+				except Exception:  # nosec B110
+					txt = ''
+				if re.search(r'github|linuxdo|google|gitlab|twitter|discord|wechat|apple', txt, re.I):
+					continue
+				debug_print(f'[INFO] Semantic match ({scope_name}): pattern={pattern.pattern!r} text={txt!r}')
+				if await _click_locator(candidate):
+					debug_print(f'[INFO] Semantic match clicked. post-click waiting 1.5s...')
+					await asyncio.sleep(1.5)
+					if await _is_email_form_visible(page) or await _wait_for_username_input(page, min(6000, FORM_ACTION_TIMEOUT_MS)):
+						debug_print('[INFO] Email form visible after semantic click => SUCCESS')
+						return True
+					debug_print('[INFO] Email form still not visible after semantic click')
+			except Exception as e:  # nosec B112
+				debug_print(f'[INFO] Semantic pattern {pattern.pattern!r} scope {scope_name} exception: {e!r:.120}')
+				continue
+
+	# 策略 1：CSS 选择器枚举
+	debug_print('[INFO] _click_email_login_entry: running CSS selector fallback')
 	for selector in EMAIL_LOGIN_ENTRY_SELECTORS:
 		buttons = page.locator(selector)
-		button_count = await buttons.count()
+		try:
+			button_count = await buttons.count()
+		except Exception:  # nosec B112
+			continue
+		debug_print(f'[INFO] Selector {selector!r} -> {button_count} matches')
 		for index in range(button_count):
 			button = buttons.nth(index)
 			try:
-				if await button.is_visible():
-					# 跳过第三方登录按钮（GitHub / LinuxDO 等）
+				if not await button.is_visible():
+					continue
+				try:
+					txt = (await button.inner_text(timeout=2000) or '').replace(r'\s+', ' ').strip()
+				except Exception:  # nosec B110
+					txt = ''
+				if re.search(r'github|linuxdo|google|gitlab|twitter|discord|wechat|apple', txt, re.I):
+					debug_print(f'[INFO] selector#{index} skipped (3rd-party): {txt!r}')
+					continue
+				if not re.search(r'邮箱|用户名|Email|Username|登录|Login|Sign|Continue|Next|继续|下一步', txt, re.I):
+					# Semi Design 图标按钮可能无文字，需要 outerHTML 含 mail/email
 					try:
-						txt = (await button.inner_text(timeout=2000) or '').replace(r'\s+', ' ').strip()
+						html_snippet = await button.evaluate('el => el.outerHTML.slice(0, 600)') or ''
 					except Exception:  # nosec B110
-						txt = ''
-					if re.search(r'github|linuxdo|google|gitlab|twitter|discord|wechat|apple', txt, re.I):
+						html_snippet = ''
+					if not re.search(r'semi-icon-mail|aria-label.*mail|aria-label.*email|icon.*mail|svg.*mail|envelope', html_snippet, re.I):
+						debug_print(f'[INFO] selector#{index} skipped (no text/mail match): {txt!r} html={html_snippet[:160]!r}')
 						continue
-					if not re.search(r'邮箱|用户名|Email|Username|登录|Login|Sign', txt, re.I):
-						# Semi Design 图标按钮可能无文字，仍尝试点击（.semi-icon-mail 路径）
-						if not re.search(r'semi-icon-mail|aria-label.*mail|aria-label.*email',
-						                 await button.evaluate('el => el.outerHTML.slice(0, 500)') or '',
-						                 re.I):
-							continue
-					if await _click_locator(button):
+				debug_print(f'[INFO] Attempting selector#{index}: text={txt!r}')
+				if await _click_locator(button):
+					debug_print('[INFO] selector click succeeded; post-click waiting 1.5s')
+					await asyncio.sleep(1.5)
+					if await _is_email_form_visible(page) or await _wait_for_username_input(page, min(6000, FORM_ACTION_TIMEOUT_MS)):
+						debug_print('[INFO] Email form visible after selector click => SUCCESS')
 						return True
-			except Exception:  # nosec B112
+					debug_print('[INFO] Email form not visible after selector click')
+			except Exception as e:  # nosec B112
+				debug_print(f'[INFO] selector {selector!r}#{index} exception: {e!r:.120}')
 				continue
 
-	for pattern in EMAIL_LOGIN_BUTTON_NAMES:
-		for scope in (page.locator('.semi-card'), page.locator('main'), page.locator('[class*="Login"]'), page):
-			try:
-				button = scope.get_by_role('button', name=pattern).first
-				if await button.is_visible() and await _click_locator(button):
-					return True
-			except Exception:  # nosec B112
-				continue
+	# 策略 2：兜底 dispatch 所有可见按钮里唯一含「邮箱/登录」的 primary 按钮
+	debug_print('[INFO] _click_email_login_entry: fallback direct JS dispatch')
+	try:
+		clicked = await page.evaluate(
+			"""() => {
+				const isVisible = (el) => {
+					if (!el || !el.isConnected) return false;
+					const s = window.getComputedStyle(el);
+					if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) return false;
+					const r = el.getBoundingClientRect();
+					return r.width > 0 && r.height > 0;
+				};
+				const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+				const buttons = [...document.querySelectorAll('button, [role="button"]')].filter(isVisible);
+				const primary = buttons.filter(b => {
+					const cls = (b.className || '').toString();
+					return /primary|Primary|blue|Blue|btn-primary|Button--primary/.test(cls);
+				});
+				const pool = (primary.length ? primary : buttons);
+				const scored = pool.map(b => {
+					const t = norm(b.innerText || b.textContent || '');
+					let score = 0;
+					if (/邮箱|用户名/.test(t)) score += 10;
+					if (/Email|Username/i.test(t)) score += 10;
+					if (/登录|Login|Sign in/.test(t)) score += 6;
+					if (/继续|下一步|Next|Continue/.test(t)) score += 3;
+					if (/github|linuxdo|google|gitlab|apple|wechat|twitter|discord/i.test(t)) score -= 20;
+					return {b, t, score};
+				}).filter(s => s.score > 0).sort((a, b) => b.score - a.score);
+				if (!scored.length) return {clicked: false, reason: 'no candidates', pool: pool.length, buttons: buttons.length};
+				const pick = scored[0];
+				const el = pick.b;
+				const fire = (t) => {
+					const ev = new MouseEvent(t, {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1});
+					el.dispatchEvent(ev);
+				};
+				fire('mouseover'); fire('mousemove'); fire('mousedown');
+				fire('mouseup'); fire('click');
+				try { el.click(); } catch {}
+				return {clicked: true, text: pick.t, score: pick.score, candidates: scored.length};
+			}"""
+		)
+		debug_print(f'[INFO] JS dispatch result: {clicked}')
+		if clicked and clicked.get('clicked'):
+			await asyncio.sleep(1.5)
+			if await _is_email_form_visible(page) or await _wait_for_username_input(page, min(6000, FORM_ACTION_TIMEOUT_MS)):
+				debug_print('[INFO] Email form visible after JS dispatch => SUCCESS')
+				return True
+	except Exception as e:  # nosec B112
+		debug_print(f'[INFO] JS dispatch exception: {e!r:.200}')
 
+	debug_print('[INFO] _click_email_login_entry => FALSE (all strategies failed)')
 	return False
 
 
