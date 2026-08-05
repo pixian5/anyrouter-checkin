@@ -979,38 +979,62 @@ async def _set_input_value(locator: Locator, value: str, timeout_ms: int) -> Non
 	)
 
 
-async def fill_email_credentials(page: Page, email: str, password: str, timeout_ms: int) -> None:
+async def fill_email_credentials(page: Page, email: str, password: str, timeout_ms: int) -> tuple[bool, bool]:
+	"""Fills whatever credential inputs are currently visible.
+	Returns a tuple of (username_filled, password_filled).
+	Adapted for 2-step login flows (email first → next → password → login).
+	"""
 	await _dismiss_blocking_overlays(page)
 	action_timeout = min(timeout_ms, FORM_ACTION_TIMEOUT_MS)
+	username_filled = False
+	password_filled = False
 
 	username_input = await _first_visible_locator(page, USERNAME_SELECTORS)
 	if not username_input:
 		for selector in USERNAME_SELECTORS:
 			locator = page.locator(selector).first
 			try:
-				await locator.wait_for(state='visible', timeout=action_timeout)
+				await locator.wait_for(state='visible', timeout=min(action_timeout, 5000))
 				username_input = locator
 				break
 			except Exception:  # nosec B112
 				continue
-	if not username_input:
-		raise TimeoutError(f'Cannot find username input: {USERNAME_SELECTORS}')
+	if username_input:
+		try:
+			await _set_input_value(username_input, email, action_timeout)
+			username_filled = True
+			debug_print(f'[INFO] Filled username/email field (value length={len(email)})')
+		except Exception as e:  # nosec B112
+			debug_print(f'[WARN] Failed to set username input: {e!r:.120}')
+	else:
+		debug_print('[INFO] No visible username input found; skipping username fill (maybe 2-step flow)')
 
 	password_input = await _first_visible_locator(page, PASSWORD_SELECTORS)
 	if not password_input:
 		for selector in PASSWORD_SELECTORS:
 			locator = page.locator(selector).first
 			try:
-				await locator.wait_for(state='visible', timeout=action_timeout)
+				await locator.wait_for(state='visible', timeout=min(action_timeout, 5000))
 				password_input = locator
 				break
 			except Exception:  # nosec B112
 				continue
-	if not password_input:
-		raise TimeoutError(f'Cannot find password input: {PASSWORD_SELECTORS}')
+	if password_input:
+		try:
+			await _set_input_value(password_input, password, action_timeout)
+			password_filled = True
+			debug_print('[INFO] Filled password field (masked)')
+		except Exception as e:  # nosec B112
+			debug_print(f'[WARN] Failed to set password input: {e!r:.120}')
+	else:
+		debug_print('[INFO] No visible password input found (might be step-1 of 2-step login flow)')
 
-	await _set_input_value(username_input, email, action_timeout)
-	await _set_input_value(password_input, password, action_timeout)
+	if not username_filled and not password_filled:
+		raise TimeoutError(
+			f'Cannot find any visible username or password inputs. '
+			f'Username selectors={USERNAME_SELECTORS}, Password selectors={PASSWORD_SELECTORS}'
+		)
+	return username_filled, password_filled
 
 
 _SUBMIT_LABELS = (
@@ -1116,11 +1140,17 @@ def _submit_destination_ok(origin_url: str, current_url: str) -> bool:
 	return True
 
 
-async def submit_login_form(page: Page, timeout_ms: int) -> None:
+async def submit_login_form(page: Page, timeout_ms: int) -> bool:
+	"""Click submit / continue / next button and wait for form reaction.
+	Returns True if the click appears to have advanced the flow (URL changed,
+	form inputs changed, or page navigated), False if nothing happened.
+	Does NOT raise on "no change" — caller decides whether to retry.
+	"""
 	action_timeout = min(timeout_ms, FORM_ACTION_TIMEOUT_MS)
 	baseline_url = page.url
 	baseline_inputs = await _count_login_form_inputs(page)
 	already_tried: list[Locator] = []
+	debug_print(f'[INFO] submit_login_form start: URL={baseline_url} inputs_user={baseline_inputs[0]} inputs_pw={baseline_inputs[1]}')
 
 	async def _candidate_skip(submit: Locator) -> str | None:
 		"""如果候选按钮不应被点，返回原因文本；否则返回 None。"""
@@ -1129,14 +1159,12 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 				return 'not visible'
 		except Exception:
 			return 'is_visible failed'
-		# 重复检查
 		for t in already_tried:
 			try:
 				if await submit.evaluate('(a, b) => a === b', t):
 					return 'duplicate'
 			except Exception:  # nosec B112
 				pass
-		# disabled 检查
 		try:
 			disabled = await submit.evaluate(
 				'el => !!el.closest?.("[disabled], [aria-disabled=\"true\"]") || !!el.disabled || el.getAttribute?.("aria-disabled") === "true"'
@@ -1145,7 +1173,6 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 				return 'disabled'
 		except Exception:  # nosec B110
 			pass
-		# 文本负向过滤：通过 innerText + aria-label + 候选按钮的 content 检查
 		try:
 			text_parts = []
 			try:
@@ -1166,11 +1193,12 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 			pass
 		return None
 
-	async def _try_click(submit: Locator) -> tuple[bool, str]:
+	async def _try_click(submit: Locator, label: str = '') -> tuple[bool, str]:
 		skip_reason = await _candidate_skip(submit)
 		if skip_reason is not None:
 			return False, skip_reason
 		already_tried.append(submit)
+		debug_print(f'[INFO] submit candidate attempt: {label}')
 		try:
 			await submit.scroll_into_view_if_needed()
 			await submit.click(timeout=action_timeout)
@@ -1178,7 +1206,6 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 			try:
 				await submit.click(force=True, timeout=action_timeout)
 			except Exception:  # nosec B110
-				# 兜底：密码框聚焦后按 Enter
 				pw = await _first_visible_locator(page, PASSWORD_SELECTORS)
 				if pw is not None:
 					try:
@@ -1186,7 +1213,6 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 						await page.keyboard.press('Enter')
 					except Exception:  # nosec B110
 						pass
-		# 等待页面是否有反应
 		changed = False
 		try:
 			await asyncio.wait_for(
@@ -1217,9 +1243,9 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 				changed = page.url != baseline_url
 			except Exception:
 				changed = False
-		# 如果 URL 错了（跳到 /reset 等），立刻回退
 		if changed and not _submit_destination_ok(baseline_url, page.url):
 			bad_url = page.url
+			debug_print(f'[WARN] Submit navigated to BAD URL {bad_url!r}, going back...')
 			try:
 				await page.go_back(wait_until='domcontentloaded', timeout=10000)
 			except Exception:  # nosec B110
@@ -1231,52 +1257,62 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 			return False, f'navigated to bad URL {bad_url}, went back'
 		return changed, 'clicked'
 
-	# 收集所有候选：先 role，后 selector
-	candidates: list[Locator] = []
+	candidates: list[tuple[Locator, str]] = []
 	for pattern in _SUBMIT_LABELS:
-		for scope in (page.locator('form'), page):
+		for scope_name, scope in (
+			('form', page.locator('form')),
+			('page', page),
+		):
 			try:
-				candidates.append(scope.get_by_role('button', name=pattern).first)
+				loc = scope.get_by_role('button', name=pattern).first
+				candidates.append((loc, f'role: {pattern.pattern!r} @{scope_name}'))
 			except Exception:  # nosec B112
 				pass
-	for selector in SUBMIT_SELECTORS:
+	for i, selector in enumerate(SUBMIT_SELECTORS):
 		try:
-			candidates.append(page.locator(selector).first)
+			candidates.append((page.locator(selector).first, f'sel[{i}]: {selector}'))
 		except Exception:  # nosec B112
 			pass
 
-	for loc in candidates:
-		ok, reason = await _try_click(loc)
+	any_changed = False
+	for loc, label in candidates:
+		ok, reason = await _try_click(loc, label)
+		debug_print(f'[INFO]   -> {label}: advanced={ok} reason={reason}')
 		if ok:
+			any_changed = True
 			break
 	else:
-		# 全部候选失败，最后兜底：密码框 + Enter
 		pw = await _first_visible_locator(page, PASSWORD_SELECTORS)
 		if pw is not None:
 			try:
 				await pw.focus()
 				await page.keyboard.press('Enter')
 				await asyncio.sleep(3)
+				debug_print('[INFO] Fallback: pressed Enter in password field; checking form change...')
+				any_changed = baseline_url != page.url or (await _count_login_form_inputs(page)) != baseline_inputs
 			except Exception:  # nosec B110
 				pass
 
 	current_inputs = await _count_login_form_inputs(page)
-	happened = _submit_happened(baseline_url, page.url, baseline_inputs, current_inputs)
+	# NOTE: _submit_happened is an async function, must AWAIT
+	happened = any_changed or bool(await _submit_happened(baseline_url, page.url, baseline_inputs, current_inputs))
 	dest_ok = _submit_destination_ok(baseline_url, page.url)
+	debug_print(
+		f'[INFO] submit_login_form result: happened={happened} dest_ok={dest_ok} '
+		f'URL_before={baseline_url!r} URL_after={page.url!r} '
+		f'inputs_before_user={baseline_inputs[0]} inputs_before_pw={baseline_inputs[1]} '
+		f'inputs_after_user={current_inputs[0]} inputs_after_pw={current_inputs[1]} '
+		f'tried_candidates={len(already_tried)}'
+	)
 	if current_inputs[0] > 0 and happened and not dest_ok:
 		raise TimeoutError(
 			f'Submit failed: navigated to bad destination {page.url!r} (expected login/console). '
 			f'Tried {len(already_tried)} candidates.'
 		)
-	if current_inputs[0] > 0 and not happened:
-		raise TimeoutError(
-			f'Submit button click failed: tried {len(already_tried)} candidates, '
-			f'URL/form unchanged. Inputs before={baseline_inputs} after={current_inputs}'
-		)
 
 	await _wait_for_optional_load_state(page, 'domcontentloaded', action_timeout)
 	await _wait_for_optional_load_state(page, 'networkidle', min(timeout_ms, 30_000))
-	await wait_for_logged_in(page, SESSION_WAIT_TIMEOUT_MS)
+	return happened
 
 
 async def login_with_email_form(
@@ -1288,11 +1324,52 @@ async def login_with_email_form(
 	provider: str = '',
 	account_name: str = '',
 ) -> None:
+	"""Login via email form. Supports both 1-step (email+password together) and
+	2-step (email first → next → password → submit) flows.
+	Loops at most 3 fill+submit rounds while progress is being made.
+	"""
 	await _open_email_login_form(
 		page,
 		timeout_ms,
 		provider=provider,
 		account_name=account_name,
 	)
-	await fill_email_credentials(page, email, password, timeout_ms)
-	await submit_login_form(page, timeout_ms)
+
+	rounds = 0
+	max_rounds = 3
+	no_progress_count = 0
+	deadline = time.monotonic() + timeout_ms / 1000
+
+	while rounds < max_rounds and time.monotonic() < deadline:
+		rounds += 1
+		remaining_ms = max(1000, int((deadline - time.monotonic()) * 1000))
+		debug_print(f'[INFO] login_with_email_form round {rounds}/{max_rounds} start (timeout_ms={remaining_ms})')
+
+		url_before = page.url
+		inputs_before = await _count_login_form_inputs(page)
+		u_filled, p_filled = await fill_email_credentials(page, email, password, remaining_ms)
+		debug_print(f'[INFO] fill result: username_filled={u_filled}, password_filled={p_filled}')
+
+		advanced = await submit_login_form(page, remaining_ms)
+		url_after = page.url
+		inputs_after = await _count_login_form_inputs(page)
+		progress = (
+			advanced
+			or url_before != url_after
+			or inputs_before != inputs_after
+			or await is_logged_in(page)
+		)
+		debug_print(f'[INFO] round {rounds} progress={progress} URL {url_before!r} → {url_after!r}')
+		if await is_logged_in(page):
+			debug_print('[INFO] Already logged in after submit; ending loop')
+			break
+		if not progress:
+			no_progress_count += 1
+			if no_progress_count >= 1:
+				debug_print('[INFO] No progress made after submit; breaking loop')
+				break
+		else:
+			no_progress_count = 0
+
+	# After all rounds, ensure we wait for login state (cookie set / redirect to console)
+	await wait_for_logged_in(page, SESSION_WAIT_TIMEOUT_MS)
