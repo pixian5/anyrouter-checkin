@@ -1468,7 +1468,7 @@ async def login_with_email_form(
 		# After submit, the login form disappearing (inputs==0) usually means
 		# a successful SPA redirect (e.g. to /console), which can outrun
 		# playwright's URL read. No point in trying another fill round.
-		if inputs_after.user == 0 and inputs_after.password == 0:
+		if inputs_after[0] == 0 and inputs_after[1] == 0:
 			debug_print('[INFO] Login form fully gone after submit; likely redirected; ending rounds')
 			break
 		if not progress:
