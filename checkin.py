@@ -134,21 +134,23 @@ async def get_waf_cookies_with_browser(
 	*,
 	use_proxy: bool = False,
 ):
-	"""使用浏览器获取 WAF cookies"""
+	"""使用浏览器获取 WAF cookies（带 httpx fallback）"""
 	print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
 
 	launch_kwargs: dict = {'headless': True}
 	proxy = get_playwright_proxy(use_proxy=use_proxy)
 	if proxy:
 		launch_kwargs['proxy'] = proxy
-	browser = await launch_async(**launch_kwargs)
+	browser = None
 
 	try:
+		from cloakbrowser import launch_async
+		browser = await launch_async(**launch_kwargs)
 		page = await browser.new_page()
 		await prepare_browser_page(page)
 		print(f'[PROCESSING] {account_name}: Access login page to get initial cookies...')
 
-		await page.goto(login_url, wait_until='domcontentloaded')
+		await page.goto(login_url, wait_until='domcontentloaded', timeout=60000)
 		await wait_for_waf_ready(page)
 
 		cookies = await page.context.cookies()
@@ -160,22 +162,65 @@ async def get_waf_cookies_with_browser(
 			if cookie_name in required_cookies and cookie_value is not None:
 				waf_cookies[cookie_name] = cookie_value
 
-		print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies')
+		print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies from browser')
+
+		if not waf_cookies:
+			print(f'[WARN] {account_name}: No WAF cookies from browser, trying httpx fallback...')
+			return await _get_waf_cookies_via_httpx(login_url, required_cookies, use_proxy)
 
 		missing_cookies = [c for c in required_cookies if c not in waf_cookies]
-
 		if missing_cookies:
-			print(f'[FAILED] {account_name}: Missing WAF cookies: {missing_cookies}')
-			await browser.close()
-			return None
+			print(f'[WARN] {account_name}: Missing {missing_cookies} from browser, trying httpx fallback...')
+			httpx_cookies = await _get_waf_cookies_via_httpx(login_url, required_cookies, use_proxy)
+			if httpx_cookies:
+				waf_cookies = {**waf_cookies, **httpx_cookies}
 
-		print(f'[SUCCESS] {account_name}: Successfully got all WAF cookies')
-		await browser.close()
+		print(f'[SUCCESS] {account_name}: Got WAF cookies: {list(waf_cookies.keys())}')
 		return waf_cookies
 
 	except Exception as e:
+		print(f'[WARN] {account_name}: Browser WAF fetch failed ({type(e).__name__}), trying httpx fallback...')
+		try:
+			result = await _get_waf_cookies_via_httpx(login_url, required_cookies, use_proxy)
+			if result:
+				return result
+		except Exception as e2:
+			print(f'[WARN] {account_name}: httpx fallback also failed: {e2}')
 		print(f'[FAILED] {account_name}: Error occurred while getting WAF cookies: {e}')
-		await browser.close()
+		return None
+	finally:
+		if browser:
+			try:
+				await browser.close()
+			except Exception:
+				pass
+
+
+async def _get_waf_cookies_via_httpx(login_url: str, required_cookies: list[str], use_proxy: bool) -> dict | None:
+	"""通过 httpx 访问登录页获取基础 WAF cookies（acw_tc, cdn_sec_tc 等）"""
+	import httpx as _httpx
+
+	proxy_url = get_proxy_server(use_proxy=use_proxy)
+	client_kw: dict = {'http2': True, 'timeout': 20.0, 'follow_redirects': True}
+	if proxy_url:
+		client_kw['proxy'] = proxy_url
+
+	try:
+		async with _httpx.AsyncClient(**client_kw) as client:
+			resp = await client.get(login_url, headers={
+				'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+				'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+			})
+			waf_cookies = {}
+			for name, cookie_jar in resp.cookies.items():
+				if name in required_cookies:
+					waf_cookies[name] = cookie_jar
+			if waf_cookies:
+				print(f'[INFO] httpx WAF fetch: got {len(waf_cookies)} cookies: {list(waf_cookies.keys())}')
+				return waf_cookies
+			return None
+	except Exception as e:
+		print(f'[WARN] httpx WAF fetch failed: {e}')
 		return None
 
 
@@ -309,7 +354,10 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 			use_proxy=provider_config.use_proxy,
 		)
 		if not waf_cookies:
-			print(f'[FAILED] {account_name}: Unable to get WAF cookies')
+			if user_cookies:
+				print(f'[WARN] {account_name}: WAF cookies unavailable, falling back to user cookies only')
+				return user_cookies
+			print(f'[FAILED] {account_name}: Unable to get WAF cookies and no user cookies provided')
 			return None
 	else:
 		print(f'[INFO] {account_name}: Bypass WAF not required, using user cookies directly')
