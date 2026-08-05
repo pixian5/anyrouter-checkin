@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
+
 from utils.debug import debug_print, is_debug_enabled
 from utils.popups import dismiss_popups, setup_popup_guard
 from utils.proxy import get_playwright_proxy
@@ -395,6 +397,37 @@ async def _wait_for_login_shell(page: Page, timeout_ms: int) -> bool:
 		return False
 
 
+async def _wait_for_proxy_ready(base_url: str, timeout_s: int = 30) -> bool:
+	"""等待代理（如 VMess URLTest 选节点）就绪，最多 timeout_s 秒。
+
+	VMess sing-box URLTest 启动后几秒内可能在选最优节点，此时代理会
+	返回连接重置或空响应。等 URLTest 完成后再访问，成功率显著提高。
+	"""
+	proxy_cfg = get_playwright_proxy()
+	proxy_arg = proxy_cfg.get('server') if proxy_cfg else None
+	deadline = time.monotonic() + timeout_s
+	last_err = ''
+	retry = 0
+	while time.monotonic() < deadline:
+		retry += 1
+		try:
+			async with httpx.AsyncClient(
+				proxy=proxy_arg,
+				timeout=httpx.Timeout(10, connect=5),
+				follow_redirects=True,
+			) as client:
+				resp = await client.head(base_url)
+				if resp.status_code < 500:
+					if retry > 1:
+						print(f'[INFO] Proxy ready after {retry} probes ({resp.status_code})')
+					return True
+		except Exception as exc:  # nosec B112
+			last_err = f'{type(exc).__name__}: {exc}'[:120]
+		await asyncio.sleep(min(2, max(0.5, deadline - time.monotonic() - 0.1)))
+	print(f'[WARN] Proxy not ready after {timeout_s}s; last err: {last_err}. Continuing anyway...')
+	return False
+
+
 async def navigate_login_page(
 	page: Page,
 	login_url: str,
@@ -409,6 +442,12 @@ async def navigate_login_page(
 	parsed = urlparse(login_url)
 	base_url = f'{parsed.scheme}://{parsed.netloc}/'
 	attempt_timeout = min(timeout_ms, 60_000)
+
+	# 先等代理就绪（VMess URLTest 启动时选节点需要几秒）
+	try:
+		await _wait_for_proxy_ready(base_url, timeout_s=30)
+	except Exception as exc:  # nosec B110
+		print(f'[WARN] _wait_for_proxy_ready skipped: {exc}')
 
 	try:
 		print(f'[INFO] Warming up {base_url} before login')
