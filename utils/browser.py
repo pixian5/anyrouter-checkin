@@ -79,9 +79,14 @@ SUBMIT_SELECTORS = (
 	'form button:has-text("Login")',
 	'form button:has-text("继续")',
 	'form button:has-text("Continue")',
-	'button:has-text("登录"):not([type="button"])',
-	'button:has-text("继续"):not([type="button"])',
-	'button:has-text("Continue"):not([type="button"])',
+	'button:has-text("继续")',
+	'button:has-text("登录")',
+	'button:has-text("Continue")',
+	'button:has-text("Next")',
+	'button:has-text("下一步")',
+	'button[class*="primary" i]:not([disabled])',
+	'button[class*="Primary"]:not([disabled])',
+	'button:has(.semi-icon-arrow-right)',
 )
 SESSION_COOKIE_NAME = 'session'
 USER_SELF_API_SUFFIX = '/api/user/self'
@@ -882,6 +887,16 @@ async def fill_email_credentials(page: Page, email: str, password: str, timeout_
 
 
 _SUBMIT_LABELS = (
+	re.compile(r'继续'),
+	re.compile(r'下一步'),
+	re.compile(r'确认'),
+	re.compile(r'登录'),
+	re.compile(r'登 录'),
+	re.compile(r'Next', re.I),
+	re.compile(r'Continue', re.I),
+	re.compile(r'Sign\s*in', re.I),
+	re.compile(r'Log\s*in', re.I),
+	re.compile(r'Login', re.I),
 	re.compile(r'^\s*继续\s*$'),
 	re.compile(r'^\s*登录\s*$'),
 	re.compile(r'^\s*登 录\s*$'),
@@ -892,54 +907,144 @@ _SUBMIT_LABELS = (
 	re.compile(r'^\s*Sign\s*in\s*$', re.I),
 	re.compile(r'^\s*Log\s*in\s*$', re.I),
 	re.compile(r'^\s*Login\s*$', re.I),
-	re.compile(r'登录'),
-	re.compile(r'Continue', re.I),
-	re.compile(r'Sign\s*in', re.I),
 )
+
+
+async def _count_login_form_inputs(page: Page) -> tuple[int, int]:
+	async def _cnt(sels) -> int:
+		cnt = 0
+		for s in sels:
+			try:
+				cnt += await page.locator(s).count()
+			except Exception:  # nosec B112
+				pass
+		return cnt
+	return await _cnt(USERNAME_SELECTORS), await _cnt(PASSWORD_SELECTORS)
+
+
+async def _submit_happened(page_before_url: str, page_after_url: str, inputs_before: tuple[int, int], inputs_after: tuple[int, int]) -> bool:
+	"""判断点击提交按钮后是否真的触发了提交/跳转/表单变化。"""
+	if page_after_url != page_before_url:
+		return True
+	if inputs_before[0] > 0 and inputs_after[0] == 0:
+		return True  # 表单消失了
+	if inputs_after[1] < inputs_before[1]:
+		return True
+	return False
 
 
 async def submit_login_form(page: Page, timeout_ms: int) -> None:
 	action_timeout = min(timeout_ms, FORM_ACTION_TIMEOUT_MS)
+	baseline_url = page.url
+	baseline_inputs = await _count_login_form_inputs(page)
+	already_tried: list[Locator] = []
 
-	# 1) 优先按语义文本找提交按钮（兼容非 form 包装的新版 UI）
-	submit: Locator | None = None
+	async def _try_click(submit: Locator, scope: str) -> bool:
+		# Skip duplicate candidates
+		for t in already_tried:
+			try:
+				if await submit.evaluate('(a, b) => a === b', t):
+					return False
+			except Exception:  # nosec B112
+				pass
+		already_tried.append(submit)
+
+		# Sanity: make sure button is interactable; otherwise skip
+		try:
+			if not await submit.is_visible():
+				return False
+			disabled = await submit.evaluate('el => !!el.closest?.(\"[disabled], [aria-disabled=\"true\"]\") || !!el.disabled || el.getAttribute?.(\"aria-disabled\") === \"true\"')
+			if disabled:
+				return False
+		except Exception:  # nosec B110
+			pass
+
+		try:
+			await submit.scroll_into_view_if_needed()
+			await submit.click(timeout=action_timeout)
+		except Exception:  # nosec B110
+			try:
+				await submit.click(force=True, timeout=action_timeout)
+			except Exception:  # nosec B110
+				# 兜底：密码框聚焦后按 Enter
+				pw = await _first_visible_locator(page, PASSWORD_SELECTORS)
+				if pw is not None:
+					try:
+						await pw.focus()
+						await page.keyboard.press('Enter')
+					except Exception:  # nosec B110
+						pass
+		# 等待页面是否有反应
+		try:
+			await asyncio.wait_for(
+				page.wait_for_function(
+					"""([u0, nuser0, npw0]) => {
+						if (location.href !== u0) return true;
+						const countSel = (sels) => {
+							let c = 0;
+							for (const s of sels) {
+								try { c += document.querySelectorAll(s).length; } catch {}
+							}
+							return c;
+						};
+						const nuser = countSel(['#username','input[name="username"]','input[name="email"]','input[type="email"]','input[autocomplete="username"]','input[autocomplete="email"]']);
+						const npw = countSel(['#password','input[name="password"]','input[type="password"]','input[autocomplete="current-password"]']);
+						if (nuser < nuser0) return true;
+						if (npw < npw0) return true;
+						return false;
+					}""",
+					arg=[baseline_url, baseline_inputs[0], baseline_inputs[1]],
+					timeout=8000,
+				),
+				timeout=9,
+			)
+			return True
+		except Exception:  # nosec B110
+			# 8秒没变化，看看是否已经开始网络请求跳转了
+			try:
+				return page.url != baseline_url
+			except Exception:
+				return False
+
+	# 1) 优先按语义文本找按钮
+	candidates: list[Locator] = []
 	for pattern in _SUBMIT_LABELS:
 		for scope in (page.locator('form'), page):
 			try:
-				button = scope.get_by_role('button', name=pattern).first
-				if await button.is_visible():
-					submit = button
-					break
+				candidates.append(scope.get_by_role('button', name=pattern).first)
 			except Exception:  # nosec B112
-				continue
-		if submit:
+				pass
+	for loc in candidates:
+		if await _try_click(loc, 'role'):
 			break
 
-	# 2) 回退到选择器
-	if submit is None:
-		submit = await _first_visible_locator(page, SUBMIT_SELECTORS)
-	if submit is None:
+	# 2) 回退到 CSS 选择器
+	if not await _submit_happened(baseline_url, page.url, baseline_inputs, await _count_login_form_inputs(page)):
 		for selector in SUBMIT_SELECTORS:
 			locator = page.locator(selector).first
+			if await _try_click(locator, f'sel:{selector}'):
+				if await _submit_happened(baseline_url, page.url, baseline_inputs, await _count_login_form_inputs(page)):
+					break
+
+	# 3) 兜底：如果还没变化，密码框 Enter 提交
+	if not await _submit_happened(baseline_url, page.url, baseline_inputs, await _count_login_form_inputs(page)):
+		pw = await _first_visible_locator(page, PASSWORD_SELECTORS)
+		if pw is not None:
 			try:
-				await locator.wait_for(state='visible', timeout=action_timeout)
-				submit = locator
-				break
-			except Exception:  # nosec B112
-				continue
-	if submit is None:
-		raise TimeoutError(f'Cannot find submit button: {SUBMIT_SELECTORS}')
-	try:
-		await submit.click(timeout=action_timeout)
-	except Exception:
-		try:
-			await submit.click(force=True, timeout=action_timeout)
-		except Exception:  # nosec B110
-			# 3) 再兜底：定位到密码输入框按 Enter
-			pw = await _first_visible_locator(page, PASSWORD_SELECTORS)
-			if pw is not None:
 				await pw.focus()
 				await page.keyboard.press('Enter')
+				await asyncio.sleep(3)
+			except Exception:  # nosec B110
+				pass
+
+	current_inputs = await _count_login_form_inputs(page)
+	if not await _submit_happened(baseline_url, page.url, baseline_inputs, current_inputs) and current_inputs[0] > 0:
+		# 候选全部点了但页面完全没变化
+		raise TimeoutError(
+			f'Submit button click failed: tried {len(already_tried)} candidates but URL/form unchanged. '
+			f'Inputs before={baseline_inputs} after={current_inputs}'
+		)
+
 	await _wait_for_optional_load_state(page, 'domcontentloaded', action_timeout)
 	await _wait_for_optional_load_state(page, 'networkidle', min(timeout_ms, 30_000))
 	await wait_for_logged_in(page, SESSION_WAIT_TIMEOUT_MS)
