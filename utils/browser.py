@@ -75,7 +75,11 @@ SUBMIT_SELECTORS = (
 	'form button:has-text("登录")',
 	'form button:has-text("登 录")',
 	'form button:has-text("Login")',
+	'form button:has-text("继续")',
+	'form button:has-text("Continue")',
 	'button:has-text("登录"):not([type="button"])',
+	'button:has-text("继续"):not([type="button"])',
+	'button:has-text("Continue"):not([type="button"])',
 )
 SESSION_COOKIE_NAME = 'session'
 USER_SELF_API_SUFFIX = '/api/user/self'
@@ -838,10 +842,44 @@ async def fill_email_credentials(page: Page, email: str, password: str, timeout_
 	await _set_input_value(password_input, password, action_timeout)
 
 
+_SUBMIT_LABELS = (
+	re.compile(r'^\s*继续\s*$'),
+	re.compile(r'^\s*登录\s*$'),
+	re.compile(r'^\s*登 录\s*$'),
+	re.compile(r'^\s*下一步\s*$'),
+	re.compile(r'^\s*确认\s*$'),
+	re.compile(r'^\s*Next\s*$', re.I),
+	re.compile(r'^\s*Continue\s*$', re.I),
+	re.compile(r'^\s*Sign\s*in\s*$', re.I),
+	re.compile(r'^\s*Log\s*in\s*$', re.I),
+	re.compile(r'^\s*Login\s*$', re.I),
+	re.compile(r'登录'),
+	re.compile(r'Continue', re.I),
+	re.compile(r'Sign\s*in', re.I),
+)
+
+
 async def submit_login_form(page: Page, timeout_ms: int) -> None:
 	action_timeout = min(timeout_ms, FORM_ACTION_TIMEOUT_MS)
-	submit = await _first_visible_locator(page, SUBMIT_SELECTORS)
-	if not submit:
+
+	# 1) 优先按语义文本找提交按钮（兼容非 form 包装的新版 UI）
+	submit: Locator | None = None
+	for pattern in _SUBMIT_LABELS:
+		for scope in (page.locator('form'), page):
+			try:
+				button = scope.get_by_role('button', name=pattern).first
+				if await button.is_visible():
+					submit = button
+					break
+			except Exception:  # nosec B112
+				continue
+		if submit:
+			break
+
+	# 2) 回退到选择器
+	if submit is None:
+		submit = await _first_visible_locator(page, SUBMIT_SELECTORS)
+	if submit is None:
 		for selector in SUBMIT_SELECTORS:
 			locator = page.locator(selector).first
 			try:
@@ -850,12 +888,19 @@ async def submit_login_form(page: Page, timeout_ms: int) -> None:
 				break
 			except Exception:  # nosec B112
 				continue
-	if not submit:
+	if submit is None:
 		raise TimeoutError(f'Cannot find submit button: {SUBMIT_SELECTORS}')
 	try:
 		await submit.click(timeout=action_timeout)
 	except Exception:
-		await submit.click(force=True, timeout=action_timeout)
+		try:
+			await submit.click(force=True, timeout=action_timeout)
+		except Exception:  # nosec B110
+			# 3) 再兜底：定位到密码输入框按 Enter
+			pw = await _first_visible_locator(page, PASSWORD_SELECTORS)
+			if pw is not None:
+				await pw.focus()
+				await page.keyboard.press('Enter')
 	await _wait_for_optional_load_state(page, 'domcontentloaded', action_timeout)
 	await _wait_for_optional_load_state(page, 'networkidle', min(timeout_ms, 30_000))
 	await wait_for_logged_in(page, SESSION_WAIT_TIMEOUT_MS)
