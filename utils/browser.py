@@ -1465,6 +1465,12 @@ async def login_with_email_form(
 		if await is_logged_in(page):
 			debug_print('[INFO] Already logged in after submit; ending loop')
 			break
+		# After submit, the login form disappearing (inputs==0) usually means
+		# a successful SPA redirect (e.g. to /console), which can outrun
+		# playwright's URL read. No point in trying another fill round.
+		if inputs_after.user == 0 and inputs_after.password == 0:
+			debug_print('[INFO] Login form fully gone after submit; likely redirected; ending rounds')
+			break
 		if not progress:
 			no_progress_count += 1
 			if no_progress_count >= 1:
