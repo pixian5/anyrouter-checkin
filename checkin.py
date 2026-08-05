@@ -534,7 +534,7 @@ async def main():
 	else:
 		print('[INFO] Debug mode disabled (set DEBUG_MODE=true to enable screenshots and verbose logs)')
 
-	print('[SYSTEM] AnyRouter.top multi-account auto check-in script started')
+	print('[SYSTEM] Multi-account auto check-in script started')
 	print(f'[TIME] Execution time: {current_time}')
 
 	if has_checked_in_with_balance_change_today():
@@ -551,7 +551,7 @@ async def main():
 	if not accounts:
 		error_msg = '[FAILED] Unable to load account configuration, program exits'
 		print(error_msg)
-		notify.push_message('AnyRouter Check-in Alert', error_msg, msg_type='text')
+		notify.push_message('Check-in Alert', error_msg, msg_type='text')
 		sys.exit(1)
 
 	print(f'[INFO] Found {len(accounts)} account configurations')
@@ -602,6 +602,7 @@ async def main():
 
 					account_check_in_details[account_key] = {
 						'name': account.get_display_name(i),
+						'provider': account.provider,
 						'before_quota': before_quota,
 						'before_used': before_used,
 						'after_quota': after_quota,
@@ -661,6 +662,14 @@ async def main():
 		mark_checked_in_with_balance_change_today(account_check_in_details, current_time)
 
 	if need_notify and notification_content:
+		# 收集本次签到涉及的所有 provider 名字，用于通知标题
+		involved_providers: list[str] = []
+		for account_key, detail in account_check_in_details.items():
+			pname = detail.get('provider') or 'anyrouter'
+			if pname not in involved_providers:
+				involved_providers.append(pname)
+		provider_label = '/'.join(involved_providers) if involved_providers else 'anyrouter'
+
 		summary = [
 			'[STATS] Check-in result statistics:',
 			f'[SUCCESS] Success: {success_count}/{total_count}',
@@ -668,7 +677,7 @@ async def main():
 		]
 
 		if success_count == total_count:
-			title = f'✅ anyrouter签到全部成功 ({success_count}/{total_count})'
+			title = f'✅ {provider_label}签到全部成功 ({success_count}/{total_count})'
 			notify_items = []
 			for i, account in enumerate(accounts):
 				account_key = f'account_{i + 1}'
@@ -677,11 +686,11 @@ async def main():
 			notify_content = '\n\n'.join(notify_items or notification_content)
 		elif success_count > 0:
 			summary_str = f'\n\n⚠️ 部分成功: 成功 {success_count} 个, 失败 {total_count - success_count} 个'
-			title = f'签到 {current_time}'
+			title = f'{provider_label}签到 {current_time}'
 			notify_content = '\n\n'.join(notification_content) + summary_str
 		else:
 			summary.append('[ERROR] All accounts check-in failed')
-			title = f'签到 {current_time}'
+			title = f'{provider_label}签到失败 {current_time}'
 
 		time_info = f'[TIME] Execution time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
 
