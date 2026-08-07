@@ -176,8 +176,14 @@ class AccountConfig:
 		return bool(self.email and self.password)
 
 	def get_display_name(self, index: int) -> str:
-		"""获取显示名称"""
-		return self.name if self.name else f'Account {index + 1}'
+		"""获取显示名称，优先显示邮箱或API用户ID"""
+		if self.email:
+			return self.email
+		if self.api_user:
+			return f'API:{self.api_user}'
+		if self.name:
+			return self.name
+		return f'Account {index + 1}'
 
 
 def load_accounts_config() -> list[AccountConfig] | None:
