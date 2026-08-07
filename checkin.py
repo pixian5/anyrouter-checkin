@@ -740,8 +740,8 @@ async def main():
 		for provider in involved_providers_for_state:
 			mark_checked_in_with_balance_change_today(account_check_in_details, current_time, provider=provider)
 
-	# 只要有签到成功就发送通知，不仅仅是余额变化或失败
-if success_count > 0 and account_check_in_details:
+		# 只要有签到成功就发送通知，不仅仅是余额变化或失败
+	if success_count > 0 and account_check_in_details:
 		# 收集本次签到涉及的所有 provider 名字，用于通知标题
 		involved_providers: list[str] = []
 		for account_key, detail in account_check_in_details.items():
