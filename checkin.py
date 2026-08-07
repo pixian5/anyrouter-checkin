@@ -752,7 +752,6 @@ async def main():
 
 		# 收集所有 provider 的内容合并到一条推送
 		all_sections = []
-		provider_titles = []
 		for provider_name, provider_details in provider_groups.items():
 			provider_total = len(provider_details)
 			provider_success = sum(1 for d in provider_details if d.get('success', False))
@@ -764,8 +763,6 @@ async def main():
 			else:
 				provider_title = f'❌ {provider_name}签到失败 ({provider_success}/{provider_total})'
 
-			provider_titles.append(provider_title)
-
 			notify_items = []
 			for detail in provider_details:
 				notify_items.append(format_check_in_notification(detail, current_time))
@@ -773,8 +770,15 @@ async def main():
 			section = f'{provider_title}\n\n' + '\n\n'.join(notify_items)
 			all_sections.append(section)
 
+		# 总体标题
+		if success_count == total_count:
+			notify_title = f'✅ 签到全部成功 ({success_count}/{total_count})'
+		elif success_count > 0:
+			notify_title = f'⚠️ 签到部分成功 ({success_count}/{total_count})'
+		else:
+			notify_title = f'❌ 签到失败 ({success_count}/{total_count})'
+
 		# 合并所有内容
-		notify_title = ' / '.join(provider_titles)
 		notify_content = '\n\n'.join(all_sections)
 
 		print(notify_content)
