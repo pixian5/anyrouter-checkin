@@ -413,9 +413,11 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 	Returns:
 		格式化后的通知消息
 	"""
-	check_in_label = check_in_time or detail['name']
+	account_name = detail['name']
+	time_str = f' @ {check_in_time}' if check_in_time else ''
 	lines = [
-		f'[CHECK-IN] {check_in_label}',
+		f'{account_name}',
+		f'[CHECK-IN]{time_str}',
 		'  ━━━━━━━━━━━━━━━━━━━━',
 		f'  📍 签到前 💵 余额: ${detail["before_quota"]:.2f}  |  📊 累计消耗: ${detail["before_used"]:.2f}',
 		f'  📍 签到后 💵 余额: ${detail["after_quota"]:.2f}  |  📊 累计消耗: ${detail["after_used"]:.2f}',
