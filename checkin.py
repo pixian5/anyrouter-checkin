@@ -65,21 +65,35 @@ def save_daily_check_in_state(state):
 		print(f'Warning: Failed to save daily check-in state: {e}')
 
 
-def has_checked_in_with_balance_change_today():
-	"""判断今天是否已经出现过签到余额增长"""
+def has_checked_in_with_balance_change_today(provider: str | None = None):
+	"""判断今天是否已经出现过签到余额增长
+
+	Args:
+		provider: 可选，如果指定则检查特定 provider 的签到状态
+	"""
 	state = load_daily_check_in_state()
 	today = datetime.now().strftime('%Y-%m-%d')
-	return state.get('date') == today and state.get('balance_increased') is True
+	if state.get('date') != today:
+		return False
+	if provider:
+		providers_checked = state.get('providers_checked', {})
+		return providers_checked.get(provider, False)
+	return state.get('balance_increased') is True
 
 
-def mark_checked_in_with_balance_change_today(details, run_time: str):
+def mark_checked_in_with_balance_change_today(details, run_time: str, provider: str | None = None):
 	"""记录今天已经出现过签到余额增长"""
-	state = {
-		'date': datetime.now().strftime('%Y-%m-%d'),
-		'balance_increased': True,
-		'run_time': run_time,
-		'details': details,
-	}
+	state = load_daily_check_in_state()
+	state['date'] = datetime.now().strftime('%Y-%m-%d')
+	state['run_time'] = run_time
+	if provider:
+		providers_checked = state.get('providers_checked', {})
+		providers_checked[provider] = True
+		state['providers_checked'] = providers_checked
+		state['balance_increased'] = True
+	else:
+		state['balance_increased'] = True
+	state['details'] = details
 	save_daily_check_in_state(state)
 
 
@@ -587,10 +601,6 @@ async def main():
 	print('[SYSTEM] Multi-account auto check-in script started')
 	print(f'[TIME] Execution time: {current_time}')
 
-	if has_checked_in_with_balance_change_today():
-		print('[INFO] Today already had a successful balance increase, skipping check-in')
-		sys.exit(0)
-
 	app_config = AppConfig.load_from_env()
 	print(f'[INFO] Loaded {len(app_config.providers)} provider configuration(s)')
 	if is_debug_enabled():
@@ -616,9 +626,21 @@ async def main():
 	need_notify = False  # 是否需要发送通知
 	balance_changed = False  # 余额是否有变化
 	balance_increased_today = False  # 今天是否通过签到获得余额增长
+	skipped_providers = set()  # 已跳过的 provider
 
 	for i, account in enumerate(accounts):
 		account_key = f'account_{i + 1}'
+		provider = account.provider
+
+		# 按 provider 检查是否已签到
+		if has_checked_in_with_balance_change_today(provider):
+			if provider not in skipped_providers:
+				print(f'[INFO] Provider "{provider}" already checked in today, skipping related accounts')
+				skipped_providers.add(provider)
+			account_name = account.get_display_name(i)
+			# 仍然加载已保存的详情用于通知
+			continue
+
 		try:
 			success, user_info_before, user_info_after = await check_in_account(account, i, app_config)
 			if success:
@@ -709,7 +731,14 @@ async def main():
 		save_balance_hash(current_balance_hash)
 
 	if balance_increased_today:
-		mark_checked_in_with_balance_change_today(account_check_in_details, current_time)
+		# 收集本次签到涉及的所有 provider
+		involved_providers_for_state = set()
+		for account_key, detail in account_check_in_details.items():
+			pname = detail.get('provider') or 'anyrouter'
+			involved_providers_for_state.add(pname)
+		# 为每个有余额增长的 provider 记录状态
+		for provider in involved_providers_for_state:
+			mark_checked_in_with_balance_change_today(account_check_in_details, current_time, provider=provider)
 
 	if need_notify and notification_content:
 		# 收集本次签到涉及的所有 provider 名字，用于通知标题
