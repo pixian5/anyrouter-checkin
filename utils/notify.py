@@ -163,6 +163,7 @@ class NotificationKit:
 			'device_key': self.bark_key,
 			'title': title,
 			'body': content,
+			'icon': 'https://anyrouter.top/favicon.ico',
 			'group': '签到通知',
 		}
 
