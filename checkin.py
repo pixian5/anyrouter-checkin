@@ -742,56 +742,51 @@ async def main():
 
 		# 只要有签到成功就发送通知，不仅仅是余额变化或失败
 	if success_count > 0 and account_check_in_details:
-		# 收集本次签到涉及的所有 provider 名字，用于通知标题
-		involved_providers: list[str] = []
+		# 按 provider 分组账号详情
+		provider_groups: dict[str, list[dict]] = {}
 		for account_key, detail in account_check_in_details.items():
 			pname = detail.get('provider') or 'anyrouter'
-			if pname not in involved_providers:
-				involved_providers.append(pname)
-		provider_label = '/'.join(involved_providers) if involved_providers else 'anyrouter'
+			if pname not in provider_groups:
+				provider_groups[pname] = []
+			provider_groups[pname].append(detail)
 
-		summary = [
-			'[STATS] Check-in result statistics:',
-			f'[SUCCESS] Success: {success_count}/{total_count}',
-			f'[FAIL] Failed: {total_count - success_count}/{total_count}',
-		]
+		# 为每个 provider 发送独立的通知
+		for provider_name, provider_details in provider_groups.items():
+			provider_total = len(provider_details)
+			provider_success = sum(1 for d in provider_details if d.get('success', False))
 
-		if success_count == total_count:
-			title = f'✅ {provider_label}签到全部成功 ({success_count}/{total_count})'
-			notify_items = []
-			for i, account in enumerate(accounts):
-				account_key = f'account_{i + 1}'
-				if account_key in account_check_in_details:
-					notify_items.append(format_check_in_notification(account_check_in_details[account_key], current_time))
-			notify_content = '\n\n'.join(notify_items or notification_content)
-		elif success_count > 0:
-			summary_str = f'\n\n⚠️ 部分成功: 成功 {success_count} 个, 失败 {total_count - success_count} 个'
-			title = f'{provider_label}签到 {current_time}'
-			notify_content = '\n\n'.join(notification_content) + summary_str
-		else:
-			summary.append('[ERROR] All accounts check-in failed')
-			title = f'{provider_label}签到失败 {current_time}'
-
-		time_info = f'[TIME] Execution time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
-
-		if success_count == 0 or (success_count > 0 and success_count < total_count):
-			notify_content = '\n\n'.join([time_info, '\n'.join(notification_content), '\n'.join(summary)])
-
-		screenshot_paths = take_pending_screenshots() if is_debug_enabled() else []
-		if screenshot_paths:
-			github_run_id = os.getenv('GITHUB_RUN_ID', '').strip()
-			github_repo = os.getenv('GITHUB_REPOSITORY', '').strip()
-			screenshot_hint = f'[SCREENSHOT] {len(screenshot_paths)} debug screenshot(s) saved'
-			if github_run_id and github_repo:
-				run_url = f'https://github.com/{github_repo}/actions/runs/{github_run_id}'
-				screenshot_hint += f'. Download artifact `checkin-screenshots-{github_run_id}` from: {run_url}'
+			if provider_success == provider_total:
+				title = f'✅ {provider_name}签到全部成功 ({provider_success}/{provider_total})'
+			elif provider_success > 0:
+				title = f'⚠️ {provider_name}签到部分成功 ({provider_success}/{provider_total})'
 			else:
-				screenshot_hint += ' to `checkin_screenshots/`'
-			notify_content += f'\n\n{screenshot_hint}'
+				title = f'❌ {provider_name}签到失败 ({provider_success}/{provider_total})'
 
-		print(notify_content)
-		notify.push_message(title, notify_content, msg_type='text')
-		print('[NOTIFY] Notification sent with check-in results')
+			notify_items = []
+			for detail in provider_details:
+				notify_items.append(format_check_in_notification(detail, current_time))
+
+			notify_content = '\n\n'.join(notify_items)
+
+			# 添加截图提示
+			if is_debug_enabled():
+				screenshot_paths = take_pending_screenshots()
+				if screenshot_paths:
+					github_run_id = os.getenv('GITHUB_RUN_ID', '').strip()
+					github_repo = os.getenv('GITHUB_REPOSITORY', '').strip()
+					screenshot_hint = f'[SCREENSHOT] {len(screenshot_paths)} debug screenshot(s) saved'
+					if github_run_id and github_repo:
+						run_url = f'https://github.com/{github_repo}/actions/runs/{github_run_id}'
+						screenshot_hint += f'. Download artifact `checkin-screenshots-{github_run_id}` from: {run_url}'
+					else:
+						screenshot_hint += ' to `checkin_screenshots/`'
+					notify_content += f'\n\n{screenshot_hint}'
+
+			print(f'--- Notification for {provider_name} ---')
+			print(notify_content)
+			notify.push_message(title, notify_content, msg_type='text')
+			print(f'[NOTIFY] {provider_name} notification sent')
+
 	else:
 		print('[INFO] No accounts checked in, notification skipped')
 
