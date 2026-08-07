@@ -182,7 +182,7 @@ class AccountConfig:
 		if self.email:
 			return self.email
 		if self.api_user:
-			return f'API:{self.api_user}'
+			return self.api_user
 		return f'Account {index + 1}'
 
 
