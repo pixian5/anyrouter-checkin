@@ -750,42 +750,36 @@ async def main():
 				provider_groups[pname] = []
 			provider_groups[pname].append(detail)
 
-		# 为每个 provider 发送独立的通知
+		# 收集所有 provider 的内容合并到一条推送
+		all_sections = []
+		provider_titles = []
 		for provider_name, provider_details in provider_groups.items():
 			provider_total = len(provider_details)
 			provider_success = sum(1 for d in provider_details if d.get('success', False))
 
 			if provider_success == provider_total:
-				title = f'✅ {provider_name}签到全部成功 ({provider_success}/{provider_total})'
+				provider_title = f'✅ {provider_name}签到全部成功 ({provider_success}/{provider_total})'
 			elif provider_success > 0:
-				title = f'⚠️ {provider_name}签到部分成功 ({provider_success}/{provider_total})'
+				provider_title = f'⚠️ {provider_name}签到部分成功 ({provider_success}/{provider_total})'
 			else:
-				title = f'❌ {provider_name}签到失败 ({provider_success}/{provider_total})'
+				provider_title = f'❌ {provider_name}签到失败 ({provider_success}/{provider_total})'
+
+			provider_titles.append(provider_title)
 
 			notify_items = []
 			for detail in provider_details:
 				notify_items.append(format_check_in_notification(detail, current_time))
 
-			notify_content = '\n\n'.join(notify_items)
+			section = f'{provider_title}\n\n' + '\n\n'.join(notify_items)
+			all_sections.append(section)
 
-			# 添加截图提示
-			if is_debug_enabled():
-				screenshot_paths = take_pending_screenshots()
-				if screenshot_paths:
-					github_run_id = os.getenv('GITHUB_RUN_ID', '').strip()
-					github_repo = os.getenv('GITHUB_REPOSITORY', '').strip()
-					screenshot_hint = f'[SCREENSHOT] {len(screenshot_paths)} debug screenshot(s) saved'
-					if github_run_id and github_repo:
-						run_url = f'https://github.com/{github_repo}/actions/runs/{github_run_id}'
-						screenshot_hint += f'. Download artifact `checkin-screenshots-{github_run_id}` from: {run_url}'
-					else:
-						screenshot_hint += ' to `checkin_screenshots/`'
-					notify_content += f'\n\n{screenshot_hint}'
+		# 合并所有内容
+		notify_title = ' / '.join(provider_titles)
+		notify_content = '\n\n'.join(all_sections)
 
-			print(f'--- Notification for {provider_name} ---')
-			print(notify_content)
-			notify.push_message(title, notify_content, msg_type='text')
-			print(f'[NOTIFY] {provider_name} notification sent')
+		print(notify_content)
+		notify.push_message(notify_title, notify_content, msg_type='text')
+		print('[NOTIFY] Combined notification sent')
 
 	else:
 		print('[INFO] No accounts checked in, notification skipped')
