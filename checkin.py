@@ -428,7 +428,7 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 		lines.append('  ━━━━━━━━━━━━━━━━━━━━')
 
 		if not has_reward and has_usage:
-			lines.append('  今日已签到（期间有使用）')
+			lines.append('  ℹ️ 今日已签到（期间有使用）')
 
 		if has_reward:
 			lines.append(f'  🎁 签到获得: +${detail["check_in_reward"]:.2f}')
@@ -440,7 +440,7 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 			change_symbol = '+' if detail['balance_change'] > 0 else ''
 			lines.append(f'  💹 余额变化: {change_symbol}${detail["balance_change"]:.2f}')
 	else:
-		lines.extend(['  ━━━━━━━━━━━━━━━━━━━━', '  今日已签到，无变化'])
+		lines.extend(['  ━━━━━━━━━━━━━━━━━━━━', '  ℹ️ 今日已签到，无变化'])
 
 	return '\n'.join(lines)
 
