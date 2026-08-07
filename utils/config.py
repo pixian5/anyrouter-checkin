@@ -176,7 +176,7 @@ class AccountConfig:
 		return bool(self.email and self.password)
 
 	def get_display_name(self, index: int) -> str:
-		"""获取显示名称，优先显示name、邮箱或API用户ID"""
+		"""获取显示名称，优先显示name，其次邮箱，其次API用户ID"""
 		if self.name:
 			return self.name
 		if self.email:
