@@ -163,8 +163,7 @@ class NotificationKit:
 			'device_key': self.bark_key,
 			'title': title,
 			'body': content,
-			'icon': 'https://anyrouter.top/favicon.ico',  # 可选：尝试使用 AnyRouter 图标
-			'group': 'AnyRouter',
+			'group': '签到通知',
 		}
 
 		self._post_json('Bark', url, data)
