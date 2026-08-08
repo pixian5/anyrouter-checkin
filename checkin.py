@@ -440,16 +440,6 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 	success = detail.get('success', False)
 	skipped = detail.get('skipped', False)
 
-	if skipped and success:
-		# 跳过的账号：之前已签到
-		return (
-			f'{account_name}\n'
-			f'[SKIP]{time_str}\n'
-			f'  ━━━━━━━━━━━━━━━━━━━━\n'
-			f'  ℹ️ 今日已签到（跳过）\n'
-			f'  ━━━━━━━━━━━━━━━━━━━━'
-		)
-
 	if not success:
 		error_msg = detail.get('error', 'Unknown error')
 		return (
@@ -466,10 +456,13 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 	after_quota = detail.get('after_quota')
 	after_used = detail.get('after_used')
 
+	# Determine the tag: [CHECK-IN] for new check-in, [SKIP] for skipped (already checked)
+	tag = '[SKIP]' if skipped else '[CHECK-IN]'
+
 	if before_quota is not None and before_used is not None:
 		lines = [
 			f'{account_name}',
-			f'[CHECK-IN]{time_str}',
+			f'{tag}{time_str}',
 			'  ━━━━━━━━━━━━━━━━━━━━',
 			f'  📍 签到前 💵 余额: ${before_quota:.2f}  |  📊 累计消耗: ${before_used:.2f}',
 			f'  📍 签到后 💵 余额: ${after_quota:.2f}  |  📊 累计消耗: ${after_used:.2f}',
@@ -505,7 +498,7 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 		# Partial data - show what we have
 		lines = [
 			f'{account_name}',
-			f'[CHECK-IN]{time_str}',
+			f'{tag}{time_str}',
 			'  ━━━━━━━━━━━━━━━━━━━━',
 		]
 		if after_quota is not None:
@@ -688,20 +681,29 @@ async def main():
 		if has_checked_in_with_balance_change_today(account_key=account_key):
 			account_name = account.get_display_name(i)
 			print(f'[INFO] {account_name} already checked in today, skipping')
-			account_check_in_details[account_key] = {
-				'name': account_name,
-				'provider': account.provider,
-				'before_quota': None,
-				'before_used': None,
-				'after_quota': None,
-				'after_used': None,
-				'check_in_reward': None,
-				'usage_increase': None,
-				'balance_change': None,
-				'success': True,
-				'skipped': True,
-				'error': '',
-			}
+			# 从保存的状态中加载之前的签到详情，用于通知显示
+			state = load_daily_check_in_state()
+			saved_detail = state.get('details', {}).get(account_key, {})
+			if saved_detail and saved_detail.get('success', False):
+				# 使用保存的详情，标记为跳过
+				saved_detail['skipped'] = True
+				saved_detail['success'] = True
+				account_check_in_details[account_key] = saved_detail
+			else:
+				account_check_in_details[account_key] = {
+					'name': account_name,
+					'provider': account.provider,
+					'before_quota': None,
+					'before_used': None,
+					'after_quota': None,
+					'after_used': None,
+					'check_in_reward': None,
+					'usage_increase': None,
+					'balance_change': None,
+					'success': True,
+					'skipped': True,
+					'error': '',
+				}
 			success_count += 1
 			continue
 
