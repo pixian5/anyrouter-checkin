@@ -900,6 +900,9 @@ async def main():
 		# 合并所有内容
 		notify_content = '\n\n'.join(all_sections)
 
+		# 在输出中显示标题和内容
+		print(notify_title)
+		print('')
 		print(notify_content)
 		notify.push_message(notify_title, notify_content, msg_type='text')
 		print('[NOTIFY] Combined notification sent')
