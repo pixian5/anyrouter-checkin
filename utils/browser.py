@@ -1460,7 +1460,20 @@ async def login_with_email_form(
 
 		url_before = page.url
 		inputs_before = await _count_login_form_inputs(page)
-		u_filled, p_filled = await fill_email_credentials(page, email, password, remaining_ms)
+
+		try:
+			u_filled, p_filled = await fill_email_credentials(page, email, password, remaining_ms)
+		except TimeoutError:
+			# Form inputs disappeared - login might have succeeded via SPA redirect
+			# that hasn't fully propagated yet. Check one more time.
+			debug_print(f'[INFO] round {rounds}: inputs not found, checking if already logged in...')
+			if await is_logged_in(page):
+				debug_print('[INFO] Logged in after input disappearance; ending loop')
+				break
+			if rounds > 1:
+				debug_print(f'[WARN] round {rounds}: form inputs gone and not logged in, breaking')
+				break
+			raise
 		debug_print(f'[INFO] fill result: username_filled={u_filled}, password_filled={p_filled}')
 
 		advanced = await submit_login_form(page, remaining_ms)
@@ -1473,14 +1486,24 @@ async def login_with_email_form(
 			or await is_logged_in(page)
 		)
 		debug_print(f'[INFO] round {rounds} progress={progress} URL {url_before!r} → {url_after!r}')
+
+		# After a successful submit, wait briefly and re-check login state
+		if progress and not await is_logged_in(page):
+			debug_print('[INFO] Submit succeeded but not logged in yet, waiting for SPA navigation...')
+			for _ in range(5):
+				await asyncio.sleep(1)
+				if await is_logged_in(page):
+					debug_print('[INFO] Logged in after waiting for navigation; ending loop')
+					break
+
 		if await is_logged_in(page):
 			debug_print('[INFO] Already logged in after submit; ending loop')
 			break
-		# After submit, the login form disappearing (inputs==0) usually means
-		# a successful SPA redirect (e.g. to /console), which can outrun
-		# playwright's URL read. No point in trying another fill round.
-		if inputs_after[0] == 0 and inputs_after[1] == 0:
-			debug_print('[INFO] Login form fully gone after submit; likely redirected; ending rounds')
+		# After submit, the login form disappearing or transforming (inputs==0)
+		# usually means a successful SPA redirect (e.g. to /console),
+		# which can outrun playwright's URL read. No point in trying another fill round.
+		if inputs_after[0] == 0 or inputs_after[1] == 0:
+			debug_print(f'[INFO] Login form inputs changed after submit (username={inputs_after[0]}, password={inputs_after[1]}); likely redirected; ending rounds')
 			break
 		if not progress:
 			no_progress_count += 1
