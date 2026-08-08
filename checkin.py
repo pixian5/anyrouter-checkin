@@ -65,34 +65,42 @@ def save_daily_check_in_state(state):
 		print(f'Warning: Failed to save daily check-in state: {e}')
 
 
-def has_checked_in_with_balance_change_today(provider: str | None = None):
+def has_checked_in_with_balance_change_today(provider: str | None = None, account_key: str | None = None):
 	"""判断今天是否已经出现过签到余额增长
 
 	Args:
 		provider: 可选，如果指定则检查特定 provider 的签到状态
+		account_key: 可选，如果指定则检查特定账号的签到状态
 	"""
 	state = load_daily_check_in_state()
 	today = datetime.now().strftime('%Y-%m-%d')
 	if state.get('date') != today:
 		return False
+	if account_key:
+		# 检查特定账号是否已成功签到
+		accounts_checked = state.get('accounts_checked', {})
+		return accounts_checked.get(account_key, False)
 	if provider:
 		providers_checked = state.get('providers_checked', {})
 		return providers_checked.get(provider, False)
 	return state.get('balance_increased') is True
 
 
-def mark_checked_in_with_balance_change_today(details, run_time: str, provider: str | None = None):
+def mark_checked_in_with_balance_change_today(details, run_time: str, provider: str | None = None, account_keys: list | None = None):
 	"""记录今天已经出现过签到余额增长"""
 	state = load_daily_check_in_state()
 	state['date'] = datetime.now().strftime('%Y-%m-%d')
 	state['run_time'] = run_time
+	if account_keys:
+		accounts_checked = state.get('accounts_checked', {})
+		for ak in account_keys:
+			accounts_checked[ak] = True
+		state['accounts_checked'] = accounts_checked
 	if provider:
 		providers_checked = state.get('providers_checked', {})
 		providers_checked[provider] = True
 		state['providers_checked'] = providers_checked
-		state['balance_increased'] = True
-	else:
-		state['balance_increased'] = True
+	state['balance_increased'] = True
 	state['details'] = details
 	save_daily_check_in_state(state)
 
@@ -429,36 +437,81 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 	"""
 	account_name = detail['name']
 	time_str = f' @ {check_in_time}' if check_in_time else ''
-	lines = [
-		f'{account_name}',
-		f'[CHECK-IN]{time_str}',
-		'  ━━━━━━━━━━━━━━━━━━━━',
-		f'  📍 签到前 💵 余额: ${detail["before_quota"]:.2f}  |  📊 累计消耗: ${detail["before_used"]:.2f}',
-		f'  📍 签到后 💵 余额: ${detail["after_quota"]:.2f}  |  📊 累计消耗: ${detail["after_used"]:.2f}',
-	]
+	success = detail.get('success', False)
+	skipped = detail.get('skipped', False)
 
-	has_reward = detail['check_in_reward'] != 0
-	has_usage = detail['usage_increase'] != 0
+	if skipped and success:
+		# 跳过的账号：之前已签到
+		return (
+			f'{account_name}\n'
+			f'[SKIP]{time_str}\n'
+			f'  ━━━━━━━━━━━━━━━━━━━━\n'
+			f'  ℹ️ 今日已签到（跳过）\n'
+			f'  ━━━━━━━━━━━━━━━━━━━━'
+		)
 
-	if has_reward or has_usage:
-		lines.append('  ━━━━━━━━━━━━━━━━━━━━')
+	if not success:
+		error_msg = detail.get('error', 'Unknown error')
+		return (
+			f'{account_name}\n'
+			f'[FAIL]{time_str}\n'
+			f'  ━━━━━━━━━━━━━━━━━━━━\n'
+			f'  ❌ 签到失败\n'
+			f'  📝 错误: {error_msg}\n'
+			f'  ━━━━━━━━━━━━━━━━━━━━'
+		)
 
-		if not has_reward and has_usage:
-			lines.append('  ℹ️ 今日已签到（期间有使用）')
+	before_quota = detail.get('before_quota')
+	before_used = detail.get('before_used')
+	after_quota = detail.get('after_quota')
+	after_used = detail.get('after_used')
 
-		if has_reward:
-			lines.append(f'  🎁 签到获得: +${detail["check_in_reward"]:.2f}')
+	if before_quota is not None and before_used is not None:
+		lines = [
+			f'{account_name}',
+			f'[CHECK-IN]{time_str}',
+			'  ━━━━━━━━━━━━━━━━━━━━',
+			f'  📍 签到前 💵 余额: ${before_quota:.2f}  |  📊 累计消耗: ${before_used:.2f}',
+			f'  📍 签到后 💵 余额: ${after_quota:.2f}  |  📊 累计消耗: ${after_used:.2f}',
+		]
 
-		if has_usage:
-			lines.append(f'  📉 期间消耗: ${detail["usage_increase"]:.2f}')
+		check_in_reward = detail.get('check_in_reward') or 0
+		usage_increase = detail.get('usage_increase') or 0
+		balance_change = detail.get('balance_change') or 0
 
-		if detail['balance_change'] != 0:
-			change_symbol = '+' if detail['balance_change'] > 0 else ''
-			lines.append(f'  💹 余额变化: {change_symbol}${detail["balance_change"]:.2f}')
+		has_reward = check_in_reward != 0
+		has_usage = usage_increase != 0
+
+		if has_reward or has_usage:
+			lines.append('  ━━━━━━━━━━━━━━━━━━━━')
+
+			if not has_reward and has_usage:
+				lines.append('  ℹ️ 今日已签到（期间有使用）')
+
+			if has_reward:
+				lines.append(f'  🎁 签到获得: +${check_in_reward:.2f}')
+
+			if has_usage:
+				lines.append(f'  📉 期间消耗: ${usage_increase:.2f}')
+
+			if balance_change != 0:
+				change_symbol = '+' if balance_change > 0 else ''
+				lines.append(f'  💹 余额变化: {change_symbol}${balance_change:.2f}')
+		else:
+			lines.extend(['  ━━━━━━━━━━━━━━━━━━━━', '  ℹ️ 今日已签到，无变化'])
+
+		return '\n'.join(lines)
 	else:
-		lines.extend(['  ━━━━━━━━━━━━━━━━━━━━', '  ℹ️ 今日已签到，无变化'])
-
-	return '\n'.join(lines)
+		# Partial data - show what we have
+		lines = [
+			f'{account_name}',
+			f'[CHECK-IN]{time_str}',
+			'  ━━━━━━━━━━━━━━━━━━━━',
+		]
+		if after_quota is not None:
+			lines.append(f'  📍 当前 💵 余额: ${after_quota:.2f}')
+		lines.extend(['  ━━━━━━━━━━━━━━━━━━━━', '  ℹ️ 今日已签到'])
+		return '\n'.join(lines)
 
 
 async def check_in_account(account: AccountConfig, account_index: int, app_config: AppConfig):
@@ -626,19 +679,30 @@ async def main():
 	need_notify = False  # 是否需要发送通知
 	balance_changed = False  # 余额是否有变化
 	balance_increased_today = False  # 今天是否通过签到获得余额增长
-	skipped_providers = set()  # 已跳过的 provider
 
 	for i, account in enumerate(accounts):
 		account_key = f'account_{i + 1}'
 		provider = account.provider
 
-		# 按 provider 检查是否已签到
-		if has_checked_in_with_balance_change_today(provider):
-			if provider not in skipped_providers:
-				print(f'[INFO] Provider "{provider}" already checked in today, skipping related accounts')
-				skipped_providers.add(provider)
+		# 检查该账号今日是否已成功签到（仅跳过已成功的账号，失败的账号仍需重试）
+		if has_checked_in_with_balance_change_today(account_key=account_key):
 			account_name = account.get_display_name(i)
-			# 仍然加载已保存的详情用于通知
+			print(f'[INFO] {account_name} already checked in today, skipping')
+			account_check_in_details[account_key] = {
+				'name': account_name,
+				'provider': account.provider,
+				'before_quota': None,
+				'before_used': None,
+				'after_quota': None,
+				'after_used': None,
+				'check_in_reward': None,
+				'usage_increase': None,
+				'balance_change': None,
+				'success': True,
+				'skipped': True,
+				'error': '',
+			}
+			success_count += 1
 			continue
 
 		try:
@@ -654,6 +718,8 @@ async def main():
 				account_name = account.get_display_name(i)
 				print(f'[NOTIFY] {account_name} failed, will send notification')
 
+			# Always add account to details (even failed ones) for notification grouping
+			account_name = account.get_display_name(i)
 			if user_info_after and user_info_after.get('success'):
 				current_quota = user_info_after['quota']
 				current_used = user_info_after['used_quota']
@@ -673,7 +739,7 @@ async def main():
 					balance_change = after_quota - before_quota
 
 					account_check_in_details[account_key] = {
-						'name': account.get_display_name(i),
+						'name': account_name,
 						'provider': account.provider,
 						'before_quota': before_quota,
 						'before_used': before_used,
@@ -687,9 +753,41 @@ async def main():
 
 					if success and balance_change > 0:
 						balance_increased_today = True
+				else:
+					# User info after succeeded but before didn't - still record
+					account_check_in_details[account_key] = {
+						'name': account_name,
+						'provider': account.provider,
+						'before_quota': None,
+						'before_used': None,
+						'after_quota': after_quota,
+						'after_used': after_used,
+						'check_in_reward': None,
+						'usage_increase': None,
+						'balance_change': None,
+						'success': success,
+						'error': user_info_after.get('error'),
+					}
+			else:
+				# Login or check-in failed - add to details for notification
+				error_msg = ''
+				if user_info_after:
+					error_msg = user_info_after.get('error', 'Unknown error')
+				account_check_in_details[account_key] = {
+					'name': account_name,
+					'provider': account.provider,
+					'before_quota': None,
+					'before_used': None,
+					'after_quota': None,
+					'after_used': None,
+					'check_in_reward': None,
+					'usage_increase': None,
+					'balance_change': None,
+					'success': success,
+					'error': error_msg or 'Login failed',
+				}
 
 			if should_notify_this_account:
-				account_name = account.get_display_name(i)
 				status = '[SUCCESS]' if success else '[FAIL]'
 				account_result = f'{status} {account_name}'
 				if user_info_after and user_info_after.get('success'):
@@ -731,14 +829,20 @@ async def main():
 		save_balance_hash(current_balance_hash)
 
 	if balance_increased_today:
-		# 收集本次签到涉及的所有 provider
+		# 收集本次签到涉及的所有 provider 和成功的账号
 		involved_providers_for_state = set()
+		successful_account_keys = []
 		for account_key, detail in account_check_in_details.items():
 			pname = detail.get('provider') or 'anyrouter'
 			involved_providers_for_state.add(pname)
-		# 为每个有余额增长的 provider 记录状态
+			if detail.get('success', False) and not detail.get('skipped', False):
+				successful_account_keys.append(account_key)
+		# 记录状态：provider + 具体成功的账号
 		for provider in involved_providers_for_state:
-			mark_checked_in_with_balance_change_today(account_check_in_details, current_time, provider=provider)
+			mark_checked_in_with_balance_change_today(
+				account_check_in_details, current_time,
+				provider=provider, account_keys=successful_account_keys
+			)
 
 		# 只要有签到成功就发送通知，不仅仅是余额变化或失败
 	if success_count > 0 and account_check_in_details:
@@ -754,10 +858,20 @@ async def main():
 		all_sections = []
 		for provider_name, provider_details in provider_groups.items():
 			provider_total = len(provider_details)
-			provider_success = sum(1 for d in provider_details if d.get('success', False))
+			# 计算真实成功数（不包含跳过的账号）
+			provider_success = sum(1 for d in provider_details if d.get('success', False) and not d.get('skipped', False))
+			provider_skipped = sum(1 for d in provider_details if d.get('skipped', False))
+
+			# 计算有效的成功数（成功或跳过的都算已处理）
+			provider_handled = provider_success + provider_skipped
 
 			if provider_success == provider_total:
 				provider_title = f'✅ {provider_name}签到全部成功 ({provider_success}/{provider_total})'
+			elif provider_skipped == provider_total:
+				provider_title = f'ℹ️ {provider_name}今日已签到，跳过 ({provider_total}/{provider_total})'
+			elif provider_handled == provider_total:
+				# 部分成功 + 部分跳过
+				provider_title = f'⚠️ {provider_name}签到完成（部分跳过）({provider_success}+{provider_skipped}/{provider_total})'
 			elif provider_success > 0:
 				provider_title = f'⚠️ {provider_name}签到部分成功 ({provider_success}/{provider_total})'
 			else:
