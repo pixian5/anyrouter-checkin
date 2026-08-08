@@ -828,23 +828,28 @@ async def main():
 	if current_balance_hash:
 		save_balance_hash(current_balance_hash)
 
-	if balance_increased_today:
-		# 收集本次签到涉及的所有 provider 和成功的账号
-		involved_providers_for_state = set()
-		successful_account_keys = []
+	# 保存所有成功签到的账号状态（不仅仅是余额增长的）
+	successful_account_keys = []
+	if account_check_in_details:
 		for account_key, detail in account_check_in_details.items():
-			pname = detail.get('provider') or 'anyrouter'
-			involved_providers_for_state.add(pname)
-			if detail.get('success', False) and not detail.get('skipped', False):
+			if detail.get('success', False):
 				successful_account_keys.append(account_key)
-		# 记录状态：provider + 具体成功的账号
-		for provider in involved_providers_for_state:
-			mark_checked_in_with_balance_change_today(
-				account_check_in_details, current_time,
-				provider=provider, account_keys=successful_account_keys
-			)
+		if successful_account_keys:
+			# 收集所有涉及的 provider
+			involved_providers = set()
+			for detail in account_check_in_details.values():
+				pname = detail.get('provider') or 'anyrouter'
+				involved_providers.add(pname)
+			for provider in involved_providers:
+				mark_checked_in_with_balance_change_today(
+					account_check_in_details, current_time,
+					provider=provider, account_keys=successful_account_keys
+				)
 
-		# 只要有签到成功就发送通知，不仅仅是余额变化或失败
+	if balance_increased_today:
+		pass  # 状态已在上方统一保存
+
+	# 只要有签到成功就发送通知，不仅仅是余额变化或失败
 	if success_count > 0 and account_check_in_details:
 		# 按 provider 分组账号详情
 		provider_groups: dict[str, list[dict]] = {}
