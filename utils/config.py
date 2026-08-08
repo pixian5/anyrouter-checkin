@@ -160,13 +160,13 @@ class AccountConfig:
 	def from_dict(cls, data: dict, index: int) -> 'AccountConfig':
 		"""从字典创建 AccountConfig"""
 		provider = data.get('provider', 'anyrouter')
-		name = data.get('name', f'Account {index + 1}')
+		name = data.get('name')  # No default - let get_display_name fall through to email/api_user
 
 		return cls(
 			cookies=data.get('cookies'),
 			api_user=data.get('api_user'),
 			provider=provider,
-			name=name if name else None,
+			name=name,
 			email=data.get('email'),
 			password=data.get('password'),
 		)
