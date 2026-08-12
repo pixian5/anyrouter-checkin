@@ -48,17 +48,7 @@
 
 按照下方图片教程操作获得。
 
-### 3. 设置 GitHub Environment Secret
-
-1. 在你 fork 的仓库中，点击 "Settings" 选项卡
-2. 在左侧菜单中找到 "Environments" -> "New environment"
-3. 新建一个名为 `production` 的环境
-4. 点击新建的 `production` 环境进入环境配置页
-5. 点击 "Add environment secret" 创建 secret：
-   - Name: `ANYROUTER_ACCOUNTS`
-   - Value: 你的多账号配置数据
-
-### 4. 多账号配置格式
+### 3. 多账号配置格式
 
 支持单个与多个账号配置，可选 `name` 和 `provider` 字段：
 
@@ -101,28 +91,6 @@
 通过 F12 工具，切到 Network 面板，可以过滤下，只要 Fetch/XHR，找到带 `New-Api-User`，这个值正常是 5 位数，如果是负数或者个位数，正常是未登录。
 
 ![获取 api_user](./assets/request-api-user.png)
-
-### 5. 启用 GitHub Actions
-
-1. 在你的仓库中，点击 "Actions" 选项卡
-2. 如果提示启用 Actions，请点击启用
-3. 找到 "AnyRouter 自动签到" workflow
-4. 点击 "Enable workflow"
-
-### 6. 测试运行
-
-你可以手动触发一次签到来测试：
-
-1. 在 "Actions" 选项卡中，点击 "AnyRouter 自动签到"
-2. 点击 "Run workflow" 按钮
-3. 确认运行
-
-![运行结果](./assets/check-in.png)
-
-## 执行时间
-
-- 脚本每 6 小时执行一次（1. action 无法准确触发，基本延时 1~1.5h；2. 目前观测到 anyrouter 的签到是每 24h 而不是零点就可签到）
-- 你也可以随时手动触发签到
 
 ## 注意事项
 

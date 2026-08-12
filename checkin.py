@@ -16,7 +16,6 @@ if hasattr(sys.stderr, 'reconfigure'):
 	sys.stderr.reconfigure(line_buffering=True)
 
 import httpx
-from cloakbrowser import launch_async
 from dotenv import load_dotenv
 
 from utils.browser import (
@@ -29,7 +28,6 @@ from utils.browser import (
 	navigate_login_page,
 	prepare_browser_page,
 	save_login_screenshot,
-	take_pending_screenshots,
 	verify_browser_login,
 	wait_for_waf_ready,
 )
@@ -132,6 +130,11 @@ def generate_balance_hash(balances):
 	)
 	balance_json = json.dumps(simple_balances, sort_keys=True, separators=(',', ':'))
 	return hashlib.sha256(balance_json.encode('utf-8')).hexdigest()[:16]
+
+
+def should_send_notification(*, balance_changed: bool, has_failures: bool) -> bool:
+	"""仅在余额变化或签到失败时发送通知。"""
+	return balance_changed or has_failures
 
 
 def parse_cookies(cookies_data):
@@ -669,7 +672,7 @@ async def main():
 	notification_content = []
 	current_balances = {}
 	account_check_in_details = {}  # 存储每个账号的签到详情
-	need_notify = False  # 是否需要发送通知
+	has_failures = False
 	balance_changed = False  # 余额是否有变化
 	balance_increased_today = False  # 今天是否通过签到获得余额增长
 
@@ -716,7 +719,7 @@ async def main():
 
 			if not success:
 				should_notify_this_account = True
-				need_notify = True
+				has_failures = True
 				account_name = account.get_display_name(i)
 				print(f'[NOTIFY] {account_name} failed, will send notification')
 
@@ -801,18 +804,16 @@ async def main():
 		except Exception as e:
 			account_name = account.get_display_name(i)
 			print(f'[FAILED] {account_name} processing exception: {e}')
-			need_notify = True
+			has_failures = True
 			notification_content.append(f'[FAIL] {account_name} exception: {str(e)[:50]}...')
 
 	current_balance_hash = generate_balance_hash(current_balances) if current_balances else None
 	if current_balance_hash:
 		if last_balance_hash is None:
 			balance_changed = True
-			need_notify = True
 			print('[NOTIFY] First run detected, will send notification with current balances')
 		elif current_balance_hash != last_balance_hash:
 			balance_changed = True
-			need_notify = True
 			print('[NOTIFY] Balance changes detected, will send notification')
 		else:
 			print('[INFO] No balance changes detected')
@@ -851,8 +852,7 @@ async def main():
 	if balance_increased_today:
 		pass  # 状态已在上方统一保存
 
-	# 只要有签到成功就发送通知，不仅仅是余额变化或失败
-	if success_count > 0 and account_check_in_details:
+	if should_send_notification(balance_changed=balance_changed, has_failures=has_failures) and account_check_in_details:
 		# 按 provider 分组账号详情
 		provider_groups: dict[str, list[dict]] = {}
 		for account_key, detail in account_check_in_details.items():
@@ -910,7 +910,7 @@ async def main():
 		print('[NOTIFY] Combined notification sent')
 
 	else:
-		print('[INFO] No accounts checked in, notification skipped')
+		print('[INFO] Balances unchanged and no check-in failures, notification skipped')
 
 	sys.exit(0 if success_count > 0 else 1)
 
