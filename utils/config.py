@@ -16,6 +16,7 @@ class ProviderConfig:
 	name: str
 	domain: str
 	login_path: str = '/login'
+	console_path: str = '/console'
 	sign_in_path: str | None = '/api/user/sign_in'
 	user_info_path: str = '/api/user/self'
 	api_user_key: str = 'new-api-user'
@@ -54,6 +55,7 @@ class ProviderConfig:
 			name=name,
 			domain=data['domain'],
 			login_path=data.get('login_path', defaults.login_path if defaults else '/login'),
+			console_path=data.get('console_path', defaults.console_path if defaults else '/console'),
 			sign_in_path=data.get('sign_in_path', defaults.sign_in_path if defaults else '/api/user/sign_in'),
 			user_info_path=data.get('user_info_path', defaults.user_info_path if defaults else '/api/user/self'),
 			api_user_key=data.get('api_user_key', defaults.api_user_key if defaults else 'new-api-user'),

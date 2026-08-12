@@ -103,31 +103,41 @@ def mark_checked_in_with_balance_change_today(details, run_time: str, provider: 
 	save_daily_check_in_state(state)
 
 
-def load_balance_hash():
-	"""加载余额hash"""
+def load_balance_snapshot() -> dict[str, dict[str, float]]:
+	"""加载按稳定账号键保存的余额快照，兼容旧版哈希文件。"""
 	try:
-		if os.path.exists(BALANCE_HASH_FILE):
-			with open(BALANCE_HASH_FILE, 'r', encoding='utf-8') as f:
-				return f.read().strip()
-	except Exception:  # nosec B110
-		pass
-	return None
+		if not os.path.exists(BALANCE_HASH_FILE):
+			return {}
+		with open(BALANCE_HASH_FILE, 'r', encoding='utf-8') as f:
+			data = json.load(f)
+		if not isinstance(data, dict):
+			return {}
+		return {
+			str(key): {'quota': float(value['quota'])}
+			for key, value in data.items()
+			if isinstance(value, dict) and isinstance(value.get('quota'), (int, float))
+		}
+	except (OSError, ValueError, TypeError, KeyError):
+		return {}
 
 
-def save_balance_hash(balance_hash):
-	"""保存余额hash"""
+def save_balance_snapshot(balances: dict[str, dict[str, float]]) -> None:
+	"""只保存余额 quota，避免累计消耗变化触发通知。"""
 	try:
 		with open(BALANCE_HASH_FILE, 'w', encoding='utf-8') as f:
-			f.write(balance_hash)
-	except Exception as e:
-		print(f'Warning: Failed to save balance hash: {e}')
+			json.dump(
+				{key: {'quota': value['quota']} for key, value in sorted(balances.items())},
+				f,
+				ensure_ascii=False,
+				indent=2,
+			)
+	except (OSError, TypeError, KeyError) as e:
+		print(f'Warning: Failed to save balance snapshot: {e}')
 
 
 def generate_balance_hash(balances):
 	"""生成余额数据的hash"""
-	simple_balances = (
-		{k: {'quota': v.get('quota'), 'used': v.get('used')} for k, v in balances.items()} if balances else {}
-	)
+	simple_balances = {k: {'quota': v.get('quota')} for k, v in balances.items()} if balances else {}
 	balance_json = json.dumps(simple_balances, sort_keys=True, separators=(',', ':'))
 	return hashlib.sha256(balance_json.encode('utf-8')).hexdigest()[:16]
 
@@ -150,6 +160,20 @@ def parse_cookies(cookies_data):
 				cookies_dict[key] = value
 		return cookies_dict
 	return {}
+
+
+def get_account_state_key(account: AccountConfig) -> str:
+	"""返回与账号顺序无关的稳定状态键。"""
+	identity = account.email or account.api_user
+	if not identity:
+		cookies = parse_cookies(account.cookies)
+		if cookies:
+			identity = hashlib.sha256(
+				json.dumps(cookies, sort_keys=True, separators=(',', ':')).encode('utf-8')
+			).hexdigest()[:16]
+		else:
+			identity = account.name or 'unnamed'
+	return f'{account.provider}:{identity}'
 
 
 async def get_waf_cookies_with_browser(
@@ -199,6 +223,10 @@ async def get_waf_cookies_with_browser(
 			httpx_cookies = await _get_waf_cookies_via_httpx(login_url, required_cookies, use_proxy)
 			if httpx_cookies:
 				waf_cookies = {**waf_cookies, **httpx_cookies}
+		missing_cookies = [c for c in required_cookies if not waf_cookies.get(c)]
+		if missing_cookies:
+			print(f'[FAILED] {account_name}: WAF cookies still incomplete: {missing_cookies}')
+			return None
 
 		print(f'[SUCCESS] {account_name}: Got WAF cookies: {list(waf_cookies.keys())}')
 		return waf_cookies
@@ -240,9 +268,11 @@ async def _get_waf_cookies_via_httpx(login_url: str, required_cookies: list[str]
 			for name, cookie_jar in resp.cookies.items():
 				if name in required_cookies:
 					waf_cookies[name] = cookie_jar
-			if waf_cookies:
+			if all(waf_cookies.get(name) for name in required_cookies):
 				print(f'[INFO] httpx WAF fetch: got {len(waf_cookies)} cookies: {list(waf_cookies.keys())}')
 				return waf_cookies
+			if waf_cookies:
+				print(f'[WARN] httpx WAF fetch incomplete: missing {[name for name in required_cookies if not waf_cookies.get(name)]}')
 			return None
 	except Exception as e:
 		print(f'[WARN] httpx WAF fetch failed: {e}')
@@ -296,7 +326,7 @@ async def login_with_credentials(
 			account_name=account_name,
 		)
 
-		if not await is_logged_in(page):
+		if not await is_logged_in(page, provider_config.console_path):
 			if await has_session_cookie(page):
 				print(f'[WARN] {account_name}: Stale session cookie on login page, forcing email login')
 			await save_login_screenshot(page, provider_name, account_name, 'before-email-login')
@@ -311,12 +341,14 @@ async def login_with_credentials(
 		else:
 			print(f'[INFO] {account_name}: Browser profile already logged in')
 
-		console_url = f'{provider_config.domain}/console'
-		user_profile = await verify_browser_login(page, console_url, timeout_ms)
+		console_url = f'{provider_config.domain}{provider_config.console_path}'
+		user_profile = await verify_browser_login(
+			page, console_url, timeout_ms, user_info_path=provider_config.user_info_path
+		)
 		if not user_profile:
 			cookies = await context.cookies()
 			cookie_names = [c.get('name') for c in cookies if c.get('name')]
-			print(f'[FAILED] {account_name}: Login failed - /api/user/self not verified')
+			print(f'[FAILED] {account_name}: Login failed - {provider_config.user_info_path} not verified')
 			debug_print(f'[INFO] {account_name}: Current URL: {page.url}')
 			debug_print(f'[INFO] {account_name}: Got cookies: {cookie_names}')
 			await save_login_screenshot(page, provider_name, account_name, 'not-authenticated')
@@ -510,7 +542,9 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 		return '\n'.join(lines)
 
 
-async def check_in_account(account: AccountConfig, account_index: int, app_config: AppConfig):
+async def check_in_account(
+	account: AccountConfig, account_index: int, app_config: AppConfig, *, skip_check_in: bool = False
+):
 	"""为单个账号执行签到操作"""
 	account_name = account.get_display_name(account_index)
 	print(f'\n[PROCESSING] Starting to process {account_name}')
@@ -563,6 +597,7 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 		provider_config,
 		api_user_override=resolved_api_user,
 		use_proxy=provider_config.use_proxy,
+		skip_check_in=skip_check_in,
 	)
 
 
@@ -574,6 +609,7 @@ def run_check_in_requests(
 	*,
 	api_user_override: str | None = None,
 	use_proxy: bool = False,
+	skip_check_in: bool = False,
 ) -> tuple[bool, dict | None, dict | None]:
 	"""执行 HTTP 签到请求（同步，避免在 async 上下文中使用阻塞 httpx）。"""
 	try:
@@ -615,10 +651,16 @@ def run_check_in_requests(
 			elif user_info_before:
 				print(user_info_before.get('error', 'Unknown error'))
 
-			if provider_config.needs_manual_check_in():
+			if provider_config.needs_manual_check_in() and not skip_check_in:
 				success = execute_check_in(client, account_name, provider_config, headers)
 				user_info_after = get_user_info(client, headers, user_info_url)
+				if success and not (user_info_after and user_info_after.get('success')):
+					print(f'[FAILED] {account_name}: Check-in succeeded but post-check-in balance query failed')
+					return False, user_info_before, user_info_after
 				return success, user_info_before, user_info_after
+			if skip_check_in:
+				user_info_after = get_user_info(client, headers, user_info_url)
+				return bool(user_info_after and user_info_after.get('success')), user_info_before, user_info_after
 
 			user_info_after = get_user_info(client, headers, user_info_url)
 			if user_info_after and user_info_after.get('success'):
@@ -665,7 +707,7 @@ async def main():
 
 	print(f'[INFO] Found {len(accounts)} account configurations')
 
-	last_balance_hash = load_balance_hash()
+	last_balance_snapshot = load_balance_snapshot()
 
 	success_count = 0
 	total_count = len(accounts)
@@ -674,44 +716,23 @@ async def main():
 	account_check_in_details = {}  # 存储每个账号的签到详情
 	has_failures = False
 	balance_changed = False  # 余额是否有变化
-	balance_increased_today = False  # 今天是否通过签到获得余额增长
 
 	for i, account in enumerate(accounts):
-		account_key = f'account_{i + 1}'
-		provider = account.provider
+		account_key = get_account_state_key(account)
+		legacy_account_key = f'account_{i + 1}'
+		account_name = account.get_display_name(i)
+		skip_check_in = has_checked_in_with_balance_change_today(account_key=account_key) or has_checked_in_with_balance_change_today(
+			account_key=legacy_account_key
+		)
 
 		# 检查该账号今日是否已成功签到（仅跳过已成功的账号，失败的账号仍需重试）
-		if has_checked_in_with_balance_change_today(account_key=account_key):
-			account_name = account.get_display_name(i)
-			print(f'[INFO] {account_name} already checked in today, skipping')
-			# 从保存的状态中加载之前的签到详情，用于通知显示
-			state = load_daily_check_in_state()
-			saved_detail = state.get('details', {}).get(account_key, {})
-			if saved_detail and saved_detail.get('success', False):
-				# 使用保存的详情，标记为跳过
-				saved_detail['skipped'] = True
-				saved_detail['success'] = True
-				account_check_in_details[account_key] = saved_detail
-			else:
-				account_check_in_details[account_key] = {
-					'name': account_name,
-					'provider': account.provider,
-					'before_quota': None,
-					'before_used': None,
-					'after_quota': None,
-					'after_used': None,
-					'check_in_reward': None,
-					'usage_increase': None,
-					'balance_change': None,
-					'success': True,
-					'skipped': True,
-					'error': '',
-				}
-			success_count += 1
-			continue
+		if skip_check_in:
+			print(f'[INFO] {account_name} already checked in today, skipping check-in request')
 
 		try:
-			success, user_info_before, user_info_after = await check_in_account(account, i, app_config)
+			success, user_info_before, user_info_after = await check_in_account(
+				account, i, app_config, skip_check_in=skip_check_in
+			)
 			if success:
 				success_count += 1
 
@@ -724,72 +745,39 @@ async def main():
 				print(f'[NOTIFY] {account_name} failed, will send notification')
 
 			# Always add account to details (even failed ones) for notification grouping
-			account_name = account.get_display_name(i)
 			if user_info_after and user_info_after.get('success'):
-				current_quota = user_info_after['quota']
-				current_used = user_info_after['used_quota']
-				current_balances[account_key] = {'quota': current_quota, 'used': current_used}
-
+				after_quota = user_info_after['quota']
+				after_used = user_info_after['used_quota']
+				current_balances[account_key] = {'quota': after_quota, 'used': after_used}
 				if user_info_before and user_info_before.get('success'):
 					before_quota = user_info_before['quota']
 					before_used = user_info_before['used_quota']
-					after_quota = user_info_after['quota']
-					after_used = user_info_after['used_quota']
-
-					total_before = before_quota + before_used
-					total_after = after_quota + after_used
-
-					check_in_reward = total_after - total_before
-					usage_increase = after_used - before_used
 					balance_change = after_quota - before_quota
-
 					account_check_in_details[account_key] = {
-						'name': account_name,
-						'provider': account.provider,
-						'before_quota': before_quota,
-						'before_used': before_used,
-						'after_quota': after_quota,
-						'after_used': after_used,
-						'check_in_reward': check_in_reward,
-						'usage_increase': usage_increase,
-						'balance_change': balance_change,
-						'success': success,
+						'name': account_name, 'provider': account.provider,
+						'before_quota': before_quota, 'before_used': before_used,
+						'after_quota': after_quota, 'after_used': after_used,
+						'check_in_reward': after_quota - before_quota + after_used - before_used,
+						'usage_increase': after_used - before_used,
+						'balance_change': balance_change, 'success': success, 'skipped': skip_check_in,
 					}
-
-					if success and balance_change > 0:
-						balance_increased_today = True
 				else:
-					# User info after succeeded but before didn't - still record
 					account_check_in_details[account_key] = {
-						'name': account_name,
-						'provider': account.provider,
-						'before_quota': None,
-						'before_used': None,
-						'after_quota': after_quota,
-						'after_used': after_used,
-						'check_in_reward': None,
-						'usage_increase': None,
-						'balance_change': None,
-						'success': success,
-						'error': user_info_after.get('error'),
+						'name': account_name, 'provider': account.provider,
+						'before_quota': None, 'before_used': None,
+						'after_quota': after_quota, 'after_used': after_used,
+						'check_in_reward': None, 'usage_increase': None,
+						'balance_change': None, 'success': success,
+						'error': user_info_before.get('error') if user_info_before else '', 'skipped': skip_check_in,
 					}
 			else:
-				# Login or check-in failed - add to details for notification
-				error_msg = ''
-				if user_info_after:
-					error_msg = user_info_after.get('error', 'Unknown error')
+				error_msg = user_info_after.get('error', 'Login failed') if user_info_after else 'Login failed'
 				account_check_in_details[account_key] = {
-					'name': account_name,
-					'provider': account.provider,
-					'before_quota': None,
-					'before_used': None,
-					'after_quota': None,
-					'after_used': None,
-					'check_in_reward': None,
-					'usage_increase': None,
-					'balance_change': None,
-					'success': success,
-					'error': error_msg or 'Login failed',
+					'name': account_name, 'provider': account.provider,
+					'before_quota': None, 'before_used': None,
+					'after_quota': None, 'after_used': None,
+					'check_in_reward': None, 'usage_increase': None,
+					'balance_change': None, 'success': success, 'error': error_msg,
 				}
 
 			if should_notify_this_account:
@@ -805,22 +793,37 @@ async def main():
 			account_name = account.get_display_name(i)
 			print(f'[FAILED] {account_name} processing exception: {e}')
 			has_failures = True
+			account_check_in_details[account_key] = {
+				'name': account_name,
+				'provider': account.provider,
+				'before_quota': None,
+				'before_used': None,
+				'after_quota': None,
+				'after_used': None,
+				'check_in_reward': None,
+				'usage_increase': None,
+				'balance_change': None,
+				'success': False,
+				'error': f'Processing exception: {str(e)[:120]}',
+			}
 			notification_content.append(f'[FAIL] {account_name} exception: {str(e)[:50]}...')
 
-	current_balance_hash = generate_balance_hash(current_balances) if current_balances else None
-	if current_balance_hash:
-		if last_balance_hash is None:
+	balances_complete = len(current_balances) == total_count
+	if balances_complete:
+		if not last_balance_snapshot:
 			balance_changed = True
-			print('[NOTIFY] First run detected, will send notification with current balances')
-		elif current_balance_hash != last_balance_hash:
+			print('[NOTIFY] First complete balance snapshot detected, will send notification')
+		elif generate_balance_hash(current_balances) != generate_balance_hash(last_balance_snapshot):
 			balance_changed = True
 			print('[NOTIFY] Balance changes detected, will send notification')
 		else:
 			print('[INFO] No balance changes detected')
+	else:
+		print(f'[WARN] Balance snapshot incomplete ({len(current_balances)}/{total_count}); baseline unchanged')
 
 	if balance_changed:
 		for i, account in enumerate(accounts):
-			account_key = f'account_{i + 1}'
+			account_key = get_account_state_key(account)
 			if account_key in account_check_in_details:
 				detail = account_check_in_details[account_key]
 				account_name = detail['name']
@@ -828,8 +831,8 @@ async def main():
 				if not any(account_name in item for item in notification_content):
 					notification_content.append(account_result)
 
-	if current_balance_hash:
-		save_balance_hash(current_balance_hash)
+	if balances_complete:
+		save_balance_snapshot(current_balances)
 
 	# 保存所有成功签到的账号状态（不仅仅是余额增长的）
 	successful_account_keys = []
@@ -838,19 +841,18 @@ async def main():
 			if detail.get('success', False):
 				successful_account_keys.append(account_key)
 		if successful_account_keys:
-			# 收集所有涉及的 provider
-			involved_providers = set()
-			for detail in account_check_in_details.values():
-				pname = detail.get('provider') or 'anyrouter'
-				involved_providers.add(pname)
-			for provider in involved_providers:
+			# 只将账号写入自己的 provider 状态，避免跨 provider 污染。
+			for provider in {detail.get('provider') or 'anyrouter' for detail in account_check_in_details.values()}:
+				provider_account_keys = [
+					key for key, detail in account_check_in_details.items()
+					if detail.get('success', False) and (detail.get('provider') or 'anyrouter') == provider
+				]
+				if not provider_account_keys:
+					continue
 				mark_checked_in_with_balance_change_today(
 					account_check_in_details, current_time,
-					provider=provider, account_keys=successful_account_keys
+					provider=provider, account_keys=provider_account_keys
 				)
-
-	if balance_increased_today:
-		pass  # 状态已在上方统一保存
 
 	if should_send_notification(balance_changed=balance_changed, has_failures=has_failures) and account_check_in_details:
 		# 按 provider 分组账号详情

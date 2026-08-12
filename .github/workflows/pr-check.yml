@@ -43,9 +43,13 @@ jobs:
         id: ruff-lint
         continue-on-error: true
         run: |
+          set -o pipefail
           echo "## Ruff Lint 检查" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run ruff check . --output-format=github 2>&1 | tee ruff-lint.log
-          if [ $? -eq 0 ]; then
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ $status -eq 0 ]; then
             echo "✅ 代码风格检查通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -57,9 +61,13 @@ jobs:
         id: ruff-format
         continue-on-error: true
         run: |
+          set -o pipefail
           echo "## Ruff Format 检查" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run ruff format --check . 2>&1 | tee ruff-format.log
-          if [ $? -eq 0 ]; then
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ $status -eq 0 ]; then
             echo "✅ 代码格式检查通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -71,9 +79,13 @@ jobs:
         id: mypy
         continue-on-error: true
         run: |
+          set -o pipefail
           echo "## MyPy 类型检查" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run mypy . --ignore-missing-imports 2>&1 | tee mypy.log
-          if [ $? -eq 0 ]; then
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ $status -eq 0 ]; then
             echo "✅ 类型检查通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -85,10 +97,14 @@ jobs:
         id: bandit
         continue-on-error: true
         run: |
+          set -o pipefail
           echo "## Bandit 安全扫描" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run bandit -r . -c pyproject.toml -f json -o bandit-report.json
           uv run bandit -r . -c pyproject.toml 2>&1 | tee bandit.log
-          if [ $? -eq 0 ]; then
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ $status -eq 0 ]; then
             echo "✅ 安全扫描通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -100,9 +116,13 @@ jobs:
         id: pytest
         continue-on-error: true
         run: |
+          set -o pipefail
           echo "## Pytest 测试" >> $GITHUB_STEP_SUMMARY
+          set +e
           uv run pytest tests/ -v --cov=. --cov-report=term --cov-report=xml --cov-report=html 2>&1 | tee pytest.log
-          if [ $? -eq 0 ]; then
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ $status -eq 0 ]; then
             echo "✅ 所有测试通过" >> $GITHUB_STEP_SUMMARY
             echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -207,7 +227,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const report = `${{ steps.generate-report.outputs.REPORT }}`;
+            const report = process.env.QUALITY_REPORT || '';
 
             // 查找之前的评论
             const { data: comments } = await github.rest.issues.listComments({
@@ -238,6 +258,8 @@ jobs:
                 body: report
               });
             }
+        env:
+          QUALITY_REPORT: ${{ steps.generate-report.outputs.REPORT }}
 
       - name: 最终状态检查
         if: always()

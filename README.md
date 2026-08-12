@@ -95,12 +95,12 @@
 ## 注意事项
 
 - 请确保每个账号的 cookies 和 API User 都是正确的
-- 可以在 Actions 页面查看详细的运行日志
+- 可以在本地运行日志中查看详细结果；PR 质量检查仍会在 GitHub Actions 中执行
 - 支持部分账号失败，只要有账号成功签到，整个任务就不会失败
 - 报 401 错误，请重新获取 cookies，理论 1 个月失效，但有 Bug，详见 [#6](https://github.com/millylee/anyrouter-check-in/issues/6)
 - 请求 200，但出现 Error 1040（08004）：Too many connections，官方数据库问题，目前已修复，但遇到几次了，详见 [#7](https://github.com/millylee/anyrouter-check-in/issues/7)
 - 部分第三方 `new-api` 站点的签到接口不是默认的 `/api/user/sign_in`，而是 `/api/user/checkin`，需要在 `PROVIDERS` 中为对应 provider 显式配置 `sign_in_path`
-- 如果某个站点 `GET /api/user/self` 返回 401，而其他同类站点正常，通常是该站点的 `session` 已失效，需要重新抓取 cookies 后更新 GitHub Secrets
+- 如果某个站点的用户信息接口返回 401，而其他同类站点正常，通常是该站点的 `session` 已失效，需要重新抓取 cookies 后更新运行环境 secret
 
 ## 配置示例
 
@@ -175,6 +175,7 @@
   "customrouter": {
     "domain": "https://custom.example.com",
     "login_path": "/auth/login",
+    "console_path": "/console",
     "sign_in_path": "/api/checkin",
     "user_info_path": "/api/profile",
     "api_user_key": "New-Api-User",
@@ -191,17 +192,15 @@
 
 > 注：`anyrouter` 和 `agentrouter` 已内置默认配置，无需在 `PROVIDERS` 中配置
 
-### 在 GitHub Actions 中配置
+### 在运行环境中配置
 
-1. 进入你的仓库 Settings -> Environments -> production
-2. 添加新的 secret：
-   - Name: `PROVIDERS`
-   - Value: 你的 provider 配置（JSON 格式）
+将 `PROVIDERS` 写入运行环境的 `.env` 或 secret 管理器。不要把账号、密码、cookies 或 token 提交到仓库。
 
 **字段说明**：
 
 - `domain` (必需)：服务商的域名
 - `login_path` (可选)：登录页面路径，默认为 `/login`（仅在 `bypass_method` 为 `"waf_cookies"` 时使用）
+- `console_path` (可选)：登录验证页面路径，默认为 `/console`
 - `sign_in_path` (可选)：签到 API 路径，默认为 `/api/user/sign_in`
 - `user_info_path` (可选)：用户信息 API 路径，默认为 `/api/user/self`
 - `api_user_key` (可选)：API 用户标识请求头名称，默认为 `new-api-user`
@@ -242,11 +241,11 @@
 
 ## 代理配置（可选）
 
-内置的 `agentrouter` 默认 `use_proxy: true`。如果你的运行环境访问该平台不稳定，可以在 GitHub Actions 中配置 mihomo 订阅代理。
+内置的 `agentrouter` 默认 `use_proxy: true`。如果你的运行环境访问该平台不稳定，可以配置 mihomo 订阅代理。
 
-在仓库 Settings -> Environments -> production -> Environment secrets 中添加：
+在运行环境的 secret 管理器中配置：
 
-- `PROXY_SUBSCRIPTION_URL`：Clash/Mihomo 订阅链接。设置后，workflow 会运行 `scripts/setup_mihomo_proxy.sh`，启动本地代理并写入 `CHECKIN_PROXY_URL`。
+- `PROXY_SUBSCRIPTION_URL`：Clash/Mihomo 订阅链接。使用部署脚本启动本地代理后，将地址写入 `CHECKIN_PROXY_URL`。
 
 本地运行时也可以直接使用已有代理：
 
@@ -307,7 +306,7 @@ PROVIDERS={"agentrouter":{"use_proxy":true}}
 
 配置步骤：
 
-1. 在仓库的 Settings -> Environments -> production -> Environment secrets 中添加上述环境变量
+1. 在运行环境的 secret 管理器中添加上述环境变量
 2. 每个通知方式都是独立的，可以只配置你需要的推送方式
 3. 如果某个通知方式配置不正确或未配置，脚本会自动跳过该通知方式
 
@@ -344,34 +343,9 @@ uv run python -m cloakbrowser install
 uv run checkin.py
 ```
 
-## Ubuntu 服务器部署
+运行时默认使用无头浏览器。如需调整浏览器行为，使用项目实际读取的 `CHECKIN_HEADLESS`、`CHECKIN_BROWSER_PROFILE_DIR` 和 `CHECKIN_WAIT_TIMEOUT_MS` 环境变量。
 
-如果你要部署到 Ubuntu 无桌面服务器，建议使用 Python 虚拟环境加 `systemd timer` 定时执行：
-
-```bash
-git clone https://github.com/pixian5/anyrouter-checkin.git
-cd anyrouter-checkin
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install .
-playwright install chromium --with-deps
-```
-
-然后创建 `.env`：
-
-```bash
-ANYROUTER_ACCOUNTS=[{"name":"账号1","provider":"anyrouter","cookies":{"session":"xxx"},"api_user":"12345"}]
-PROVIDERS={"dogaltman":{"domain":"https://ai.dogaltman.us.ci","sign_in_path":"/api/user/checkin","bypass_method":"waf_cookies","waf_cookie_names":["cf_clearance"]}}
-PLAYWRIGHT_HEADLESS=true
-```
-
-说明：
-
-- Ubuntu 服务器通常没有图形界面，Playwright 需要使用无头模式。项目现已支持通过 `PLAYWRIGHT_HEADLESS=true` 显式指定
-- 某些第三方站点需要额外 WAF cookies，建议通过 `PROVIDERS` 显式配置
-- 若服务商对机房 IP 有风控，即使 cookies 正确也可能返回 403，这种情况需要更换运行环境或继续针对该站点单独适配
+服务器上的旧签到任务和 systemd 部署已移除；请在你自己的受控运行环境中调用 `uv run checkin.py`。
 
 ## 测试
 

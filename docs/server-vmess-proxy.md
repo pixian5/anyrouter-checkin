@@ -1,6 +1,6 @@
-# 服务器 AnyRouter VMess 代理
+# 服务器 VMess 代理
 
-服务器 `uk.sbbz.tech` 已复用现有的 sing-box 二进制 `/usr/local/bin/bz`，为 AnyRouter 单独启动 VMess 客户端。
+服务器 `uk.sbbz.tech` 复用现有的 sing-box 二进制 `/usr/local/bin/bz`，仅运行隔离的 VMess 客户端代理。本文件不包含签到任务或签到部署。
 
 ## 运行结构
 
@@ -28,8 +28,4 @@ systemctl restart anyrouter-vmess-client.service
 
 ## 失败处理
 
-如果签到日志出现 Playwright 超时，先检查客户端服务是否运行以及本地代理是否能返回 HTTP 状态码。sing-box 自动测速只负责选择节点；如果 7 个节点都不可用，签到会失败并由现有 Bark 配置发送失败通知。
-
-## 通知条件
-
-签到任务仅在余额相对上次运行发生变化，或存在签到失败时发送通知。所有账号均为当日已签到且余额未变化时，任务会保持静默；部分账号有余额变化时仍会发送汇总通知。
+如果需要使用该代理的客户端出现网络超时，先检查客户端服务是否运行以及本地代理是否能返回 HTTP 状态码。sing-box 自动测速只负责选择节点；如果 7 个节点都不可用，相关客户端请求会失败。

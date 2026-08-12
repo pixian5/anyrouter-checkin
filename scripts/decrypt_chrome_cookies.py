@@ -65,34 +65,39 @@ def main():
     os.close(fd)
     shutil.copy2(cookie_db, tmp_path)
 
-    conn = sqlite3.connect(tmp_path)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly "
-        "FROM cookies WHERE host_key LIKE '%anyrouter%' OR host_key LIKE '%agentrouter%' "
-        "ORDER BY host_key, name"
-    )
-
     results = {}
-    for host, name, value, encrypted_value, path, expires, secure, httponly in cur.fetchall():
-        raw = encrypted_value if encrypted_value else (value.encode() if value else b"")
+    conn = None
+    try:
+        conn = sqlite3.connect(tmp_path)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly "
+            "FROM cookies WHERE host_key LIKE '%anyrouter%' OR host_key LIKE '%agentrouter%' "
+            "ORDER BY host_key, name"
+        )
+        for host, name, value, encrypted_value, path, expires, secure, httponly in cur.fetchall():
+            raw = encrypted_value if encrypted_value else (value.encode() if value else b"")
+            try:
+                plain = decrypt_cookie(raw, key)
+            except Exception as e:
+                plain = f"<DECRYPT_ERROR: {e}>"
+            key_name = f"{host}::{name}"
+            results[key_name] = {
+                "host": host,
+                "name": name,
+                "value": plain,
+                "path": path,
+                "httponly": bool(httponly),
+                "secure": bool(secure),
+                "length": len(raw),
+            }
+    finally:
+        if conn is not None:
+            conn.close()
         try:
-            plain = decrypt_cookie(raw, key)
-        except Exception as e:
-            plain = f"<DECRYPT_ERROR: {e}>"
-        key_name = f"{host}::{name}"
-        results[key_name] = {
-            "host": host,
-            "name": name,
-            "value": plain,
-            "path": path,
-            "httponly": bool(httponly),
-            "secure": bool(secure),
-            "length": len(raw),
-        }
-
-    conn.close()
-    os.unlink(tmp_path)
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
     print(json.dumps(results, indent=2, ensure_ascii=False))
 
 

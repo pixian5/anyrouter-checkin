@@ -6,10 +6,11 @@ import asyncio
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -89,7 +90,6 @@ SUBMIT_SELECTORS = (
 	'button:has(.semi-icon-arrow-right)',
 )
 SESSION_COOKIE_NAME = 'session'
-USER_SELF_API_SUFFIX = '/api/user/self'
 CONSOLE_PATH = '/console'
 DEFAULT_SCREENSHOT_DIR = 'checkin_screenshots'
 DEFAULT_TIMEOUT_MS = 60_000
@@ -504,8 +504,8 @@ def _extract_user_profile(payload: object) -> dict | None:
 	return None
 
 
-async def _parse_user_self_response(response) -> dict | None:
-	if USER_SELF_API_SUFFIX not in response.url or response.status != 200:
+async def _parse_user_self_response(response: Any, user_info_path: str) -> dict | None:
+	if user_info_path not in response.url or response.status != 200:
 		return None
 	try:
 		payload = await response.json()
@@ -514,10 +514,10 @@ async def _parse_user_self_response(response) -> dict | None:
 	return _extract_user_profile(payload)
 
 
-async def is_logged_in(page: Page) -> bool:
-	"""快速判断：是否在 /console，或仍停留在登录页。"""
+async def is_logged_in(page: Page, console_path: str = CONSOLE_PATH) -> bool:
+	"""快速判断：是否在控制台，或仍停留在登录页。"""
 	url = page.url.lower()
-	if CONSOLE_PATH in url:
+	if console_path.rstrip('/').lower() in url:
 		return True
 	if '/login' in url or '/signin' in url or '/sign-in' in url:
 		return False
@@ -622,8 +622,14 @@ async def _dump_login_error_context(page: Page, label: str = '') -> None:
 		debug_print(f'[DIAG] Failed to dump error context: {e!r:.160}')
 
 
-async def verify_browser_login(page: Page, console_url: str, timeout_ms: int) -> dict | None:
-	"""跳转 /console 并拦截 /api/user/self，用浏览器会话确认登录用户。"""
+async def verify_browser_login(
+	page: Page,
+	console_url: str,
+	timeout_ms: int = DEFAULT_TIMEOUT_MS,
+	*,
+	user_info_path: str = '/api/user/self',
+) -> dict | None:
+	"""跳转控制台并拦截用户信息接口，用浏览器会话确认登录用户。"""
 	verify_timeout = min(timeout_ms, SESSION_WAIT_TIMEOUT_MS)
 	captured_profile: dict | None = None
 	verified = asyncio.Event()
@@ -633,7 +639,7 @@ async def verify_browser_login(page: Page, console_url: str, timeout_ms: int) ->
 		if captured_profile is not None:
 			return
 		try:
-			profile = await _parse_user_self_response(response)
+			profile = await _parse_user_self_response(response, user_info_path)
 			if profile:
 				captured_profile = profile
 				verified.set()
@@ -666,7 +672,7 @@ async def verify_browser_login(page: Page, console_url: str, timeout_ms: int) ->
 
 	page.on('response', on_response)
 	try:
-		print(f'[INFO] Verifying login via {console_url} and {USER_SELF_API_SUFFIX}')
+		print(f'[INFO] Verifying login via {console_url} and {user_info_path}')
 		await page.goto(console_url, wait_until='load', timeout=min(timeout_ms, 60_000))
 		try:
 			await page.wait_for_load_state('networkidle', timeout=20_000)
@@ -685,13 +691,13 @@ async def verify_browser_login(page: Page, console_url: str, timeout_ms: int) ->
 		if is_debug_enabled():
 			user_id = captured_profile.get('id')
 			username = captured_profile.get('username', '')
-			print(f'[INFO] Login verified via {USER_SELF_API_SUFFIX}: id={user_id}, username={username}')
+			print(f'[INFO] Login verified via {user_info_path}: id={user_id}, username={username}')
 		else:
 			print('[INFO] Login verified')
 		return captured_profile
 
-	if CONSOLE_PATH in page.url.lower():
-		print(f'[WARN] Reached {CONSOLE_PATH} but {USER_SELF_API_SUFFIX} returned no user profile')
+	if console_url.rstrip('/').lower() in page.url.lower():
+		print(f'[WARN] Reached {console_url} but {user_info_path} returned no user profile')
 	else:
 		debug_print(f'[WARN] Login verification failed: current URL={page.url}')
 		print('[WARN] Login verification failed')
