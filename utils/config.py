@@ -51,9 +51,12 @@ class ProviderConfig:
 		"""
 		default_use_proxy = defaults.use_proxy if defaults else False
 		default_persist_profile = defaults.persist_profile if defaults else False
+		default_domain = defaults.domain if defaults else None
+		if not data.get('domain') and not default_domain:
+			raise ValueError('domain is required for a new provider')
 		return cls(
 			name=name,
-			domain=data['domain'],
+			domain=data.get('domain', default_domain),
 			login_path=data.get('login_path', defaults.login_path if defaults else '/login'),
 			console_path=data.get('console_path', defaults.console_path if defaults else '/console'),
 			sign_in_path=data.get('sign_in_path', defaults.sign_in_path if defaults else '/api/user/sign_in'),
