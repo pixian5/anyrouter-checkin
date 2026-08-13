@@ -7,7 +7,7 @@
 - 客户端配置：`/etc/bz/anyrouter-client.json`
 - systemd 服务：`anyrouter-vmess-client.service`
 - 本地代理：`http://127.0.0.1:20808`
-- 节点选择：sing-box `urltest`，每 5 分钟探测 7 个 VMess 节点并自动选择可用节点
+- 节点配置：订阅生成 7 个 VMess 节点；当前 sf 为避免对 AnyRouter 的探测误差，固定路由到实测可用的 `jp4`，配置变更前备份保存在服务器 `/etc/bz/anyrouter-client.json.before-*`
 
 客户端只监听回环地址，不占用现有 `bz.service`、`xbz.service` 的公网端口，也不会代理天气推送或其它服务。
 
