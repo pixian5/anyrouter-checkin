@@ -6,10 +6,10 @@ import os
 
 
 def get_proxy_server(*, use_proxy: bool = True) -> str | None:
-	"""按平台配置读取 CHECKIN_PROXY_URL；use_proxy=False 时不返回代理地址。"""
+	"""按平台配置读取代理地址；兼容原有 ANYROUTER_PROXY 配置。"""
 	if not use_proxy:
 		return None
-	server = os.getenv('CHECKIN_PROXY_URL', '').strip()
+	server = os.getenv('CHECKIN_PROXY_URL', '').strip() or os.getenv('ANYROUTER_PROXY', '').strip()
 	return server or None
 
 

@@ -1,6 +1,6 @@
 # 服务器 VMess 代理
 
-服务器 `uk.sbbz.tech` 复用现有的 sing-box 二进制 `/usr/local/bin/bz`，仅运行隔离的 VMess 客户端代理。本文件不包含签到任务或签到部署。
+服务器 `sf.sbbz.tech` 复用现有的 sing-box 二进制 `/usr/local/bin/bz`，仅运行隔离的 VMess 客户端代理。本文件不包含签到任务或签到部署。
 
 ## 运行结构
 
