@@ -8,7 +8,7 @@
 - systemd 服务：`anyrouter-vmess-client.service`
 - TUN 接口：`singbox0`
 - 路由规则：`domain_suffix: [anyrouter.top]`
-- 路由出站：`anyrouter-auto`，由 sing-box `urltest` 组选择可用 VMess 节点
+- 路由出站：当前固定 `jp7`。`urltest` 组保留用于维护时探测节点，但不用于同一次签到，以避免 WAF cookies 因出口切换失效。
 - 节点配置：只保存在服务器配置中，不提交仓库
 
 该服务不修改现有 `bz.service` 和 `xbz.service` 的服务端配置。配置变更前的备份保存在服务器 `/etc/bz/anyrouter-client.json.before-*`。
@@ -23,7 +23,7 @@ curl -L https://anyrouter.top/api/user/self
 journalctl -u anyrouter-vmess-client.service -f
 ```
 
-验证日志应同时出现 `inbound/tun[global-tun]` 和目标 VMess 出站。若显示 `outbound/direct[direct]`，说明域名规则未命中；若 VMess 已命中但 TLS 或 HTTP 失败，应检查 `anyrouter-auto` 的节点选择结果后再次实测。
+验证日志应同时出现 `inbound/tun[global-tun]` 和目标 VMess 出站。若显示 `outbound/direct[direct]`，说明域名规则未命中；若 VMess 已命中但 TLS 或 HTTP 失败，应在维护窗口测试订阅节点并更新固定出站，不能在同一次签到中途切换节点。
 
 ## 变更步骤
 

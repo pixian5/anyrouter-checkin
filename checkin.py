@@ -101,7 +101,13 @@ def mark_checked_in_today(details, run_time: str, provider: str | None = None, a
 		providers_checked[provider] = True
 		state['providers_checked'] = providers_checked
 	state['checked_in'] = True
-	state['details'] = details
+	stored_details = state.get('details', {})
+	if not isinstance(stored_details, dict):
+		stored_details = {}
+	for account_key in account_keys or []:
+		if account_key in details:
+			stored_details[account_key] = details[account_key]
+	state['details'] = stored_details
 	save_daily_check_in_state(state)
 
 
@@ -176,6 +182,28 @@ def get_account_state_key(account: AccountConfig) -> str:
 		else:
 			identity = account.name or 'unnamed'
 	return f'{account.provider}:{identity}'
+
+
+def get_skipped_account_detail(
+	state: dict, account_key: str, legacy_account_key: str, account_name: str, provider: str
+) -> dict:
+	"""从当天状态构建跳过账号详情，绝不把旧奖励再次当作本次余额变化。"""
+	details = state.get('details', {})
+	cached = details.get(account_key) or details.get(legacy_account_key) if isinstance(details, dict) else None
+	detail = dict(cached) if isinstance(cached, dict) else {}
+	detail.update(
+		{
+			'name': account_name,
+			'provider': provider,
+			'success': True,
+			'skipped': True,
+			'balance_change': 0,
+			'check_in_reward': 0,
+			'usage_increase': 0,
+		}
+	)
+	detail.pop('error', None)
+	return detail
 
 
 async def get_waf_cookies_with_browser(
@@ -678,6 +706,7 @@ async def main():
 	print(f'[INFO] Found {len(accounts)} account configurations')
 
 	last_balance_snapshot = load_balance_snapshot()
+	daily_check_in_state = load_daily_check_in_state()
 
 	success_count = 0
 	total_count = len(accounts)
@@ -698,6 +727,23 @@ async def main():
 		# 检查该账号今日是否已成功签到（仅跳过已成功的账号，失败的账号仍需重试）
 		if skip_check_in:
 			print(f'[INFO] {account_name} already checked in today, skipping check-in request')
+			detail = get_skipped_account_detail(
+				daily_check_in_state,
+				account_key,
+				legacy_account_key,
+				account_name,
+				account.provider,
+			)
+			account_check_in_details[account_key] = detail
+			if isinstance(detail.get('after_quota'), (int, float)) and isinstance(
+				detail.get('after_used'), (int, float)
+			):
+				current_balances[account_key] = {
+					'quota': detail['after_quota'],
+					'used': detail['after_used'],
+				}
+			success_count += 1
+			continue
 
 		try:
 			success, user_info_before, user_info_after = await check_in_account(

@@ -8,6 +8,7 @@ import checkin
 from checkin import (
 	generate_balance_hash,
 	get_account_state_key,
+	get_skipped_account_detail,
 	mark_checked_in_today,
 	prepare_cookies,
 	should_send_notification,
@@ -76,6 +77,57 @@ def test_mark_checked_in_resets_stale_account_flags_from_previous_day(tmp_path, 
 	state = checkin.load_daily_check_in_state()
 	assert state['accounts_checked'] == {'current-account': True}
 	assert state['providers_checked'] == {'anyrouter': True}
+
+
+def test_mark_checked_in_keeps_other_provider_details(tmp_path, monkeypatch):
+	state_file = tmp_path / 'daily_checkin_state.json'
+	monkeypatch.setattr(checkin, 'DAILY_CHECK_IN_STATE_FILE', str(state_file))
+	checkin.save_daily_check_in_state(
+		{
+			'date': checkin.datetime.now().strftime('%Y-%m-%d'),
+			'details': {'agentrouter:one': {'success': True, 'after_quota': 450}},
+		}
+	)
+
+	mark_checked_in_today(
+		{'anyrouter:two': {'success': True, 'after_quota': 6926.3}},
+		'now',
+		provider='anyrouter',
+		account_keys=['anyrouter:two'],
+	)
+
+	assert checkin.load_daily_check_in_state()['details'] == {
+		'agentrouter:one': {'success': True, 'after_quota': 450},
+		'anyrouter:two': {'success': True, 'after_quota': 6926.3},
+	}
+
+
+def test_skipped_account_detail_uses_saved_balance_without_repeating_reward():
+	detail = get_skipped_account_detail(
+		{
+			'details': {
+				'anyrouter:85976': {
+					'success': True,
+					'before_quota': 6901.3,
+					'after_quota': 6926.3,
+					'before_used': 48.7,
+					'after_used': 48.7,
+					'balance_change': 25,
+					'check_in_reward': 25,
+				}
+			}
+		},
+		'anyrouter:85976',
+		'account_3',
+		'85976',
+		'anyrouter',
+	)
+
+	assert detail['success'] is True
+	assert detail['skipped'] is True
+	assert detail['after_quota'] == 6926.3
+	assert detail['balance_change'] == 0
+	assert detail['check_in_reward'] == 0
 
 
 async def test_prepare_cookies_keeps_session_and_prefers_fresh_waf_cookies(monkeypatch):
