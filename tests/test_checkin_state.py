@@ -9,9 +9,10 @@ from checkin import (
 	generate_balance_hash,
 	get_account_state_key,
 	mark_checked_in_today,
+	prepare_cookies,
 	should_send_notification,
 )
-from utils.config import AccountConfig
+from utils.config import AccountConfig, ProviderConfig
 
 
 def test_balance_hash_changes_when_quota_changes():
@@ -75,3 +76,28 @@ def test_mark_checked_in_resets_stale_account_flags_from_previous_day(tmp_path, 
 	state = checkin.load_daily_check_in_state()
 	assert state['accounts_checked'] == {'current-account': True}
 	assert state['providers_checked'] == {'anyrouter': True}
+
+
+async def test_prepare_cookies_keeps_session_and_prefers_fresh_waf_cookies(monkeypatch):
+	async def fake_waf_cookies(*args, **kwargs):
+		return {'acw_tc': 'fresh-waf', 'cdn_sec_tc': 'fresh-cdn'}
+
+	monkeypatch.setattr(checkin, 'get_waf_cookies_with_browser', fake_waf_cookies)
+	provider = ProviderConfig(
+		name='anyrouter',
+		domain='https://anyrouter.top',
+		bypass_method='waf_cookies',
+		waf_cookie_names=['acw_tc', 'cdn_sec_tc'],
+	)
+
+	cookies = await prepare_cookies(
+		'account',
+		provider,
+		{'session': 'current-session', 'acw_tc': 'stale-waf', 'cdn_sec_tc': 'stale-cdn'},
+	)
+
+	assert cookies == {
+		'session': 'current-session',
+		'acw_tc': 'fresh-waf',
+		'cdn_sec_tc': 'fresh-cdn',
+	}

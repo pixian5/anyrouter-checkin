@@ -29,7 +29,8 @@ jobs:
             git clone --depth=1 --branch main https://github.com/pixian5/anyrouter-checkin.git "$release_path"
             rsync -a --delete "$release_path/" "$deploy_path/" \
               --exclude '.env' \
-              --exclude '.env.*' \
+              --exclude '.env.before-*' \
+              --exclude '.env.bak.*' \
               --exclude '.venv/' \
               --exclude 'balance_hash.txt' \
               --exclude 'daily_checkin_state.json' \
