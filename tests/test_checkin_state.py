@@ -1,14 +1,17 @@
 import sys
 from pathlib import Path
 
-import pytest
-
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from checkin import generate_balance_hash, get_account_state_key, should_send_notification
+import checkin
+from checkin import (
+	generate_balance_hash,
+	get_account_state_key,
+	mark_checked_in_today,
+	should_send_notification,
+)
 from utils.config import AccountConfig
-from utils.proxy import get_proxy_server
 
 
 def test_balance_hash_changes_when_quota_changes():
@@ -54,18 +57,21 @@ def test_first_snapshot_without_a_balance_change_does_not_notify():
 	assert not should_send_notification(balance_changed=False, has_failures=False)
 
 
-def test_proxy_prefers_checkin_proxy_url(monkeypatch: pytest.MonkeyPatch):
-	monkeypatch.setenv('CHECKIN_PROXY_URL', 'http://new-proxy:20808')
-	monkeypatch.setenv('ANYROUTER_PROXY', 'http://legacy-proxy:20808')
-	assert get_proxy_server() == 'http://new-proxy:20808'
-
-
-def test_proxy_supports_legacy_anyrouter_proxy(monkeypatch: pytest.MonkeyPatch):
-	monkeypatch.delenv('CHECKIN_PROXY_URL', raising=False)
-	monkeypatch.setenv('ANYROUTER_PROXY', 'http://legacy-proxy:20808')
-	assert get_proxy_server() == 'http://legacy-proxy:20808'
-
-
 def test_account_state_key_is_stable_when_account_order_changes():
 	account = AccountConfig(cookies={'session': 'token'}, api_user='123', provider='anyrouter', name='primary')
 	assert get_account_state_key(account) == 'anyrouter:123'
+
+
+def test_mark_checked_in_resets_stale_account_flags_from_previous_day(tmp_path, monkeypatch):
+	state_file = tmp_path / 'daily_checkin_state.json'
+	state_file.write_text(
+		'{"date":"2000-01-01","accounts_checked":{"old-account":true},"providers_checked":{"old":true}}',
+		encoding='utf-8',
+	)
+	monkeypatch.setattr(checkin, 'DAILY_CHECK_IN_STATE_FILE', str(state_file))
+
+	mark_checked_in_today({}, 'now', provider='anyrouter', account_keys=['current-account'])
+
+	state = checkin.load_daily_check_in_state()
+	assert state['accounts_checked'] == {'current-account': True}
+	assert state['providers_checked'] == {'anyrouter': True}

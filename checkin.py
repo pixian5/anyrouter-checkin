@@ -34,7 +34,6 @@ from utils.browser import (
 from utils.config import AccountConfig, AppConfig, load_accounts_config
 from utils.debug import debug_print, is_debug_enabled
 from utils.notify import notify
-from utils.proxy import get_playwright_proxy, get_proxy_server
 
 load_dotenv()
 
@@ -63,8 +62,8 @@ def save_daily_check_in_state(state):
 		print(f'Warning: Failed to save daily check-in state: {e}')
 
 
-def has_checked_in_with_balance_change_today(provider: str | None = None, account_key: str | None = None):
-	"""判断今天是否已经出现过签到余额增长
+def has_checked_in_today(provider: str | None = None, account_key: str | None = None):
+	"""判断今天是否已经成功处理过签到
 
 	Args:
 		provider: 可选，如果指定则检查特定 provider 的签到状态
@@ -81,15 +80,16 @@ def has_checked_in_with_balance_change_today(provider: str | None = None, accoun
 	if provider:
 		providers_checked = state.get('providers_checked', {})
 		return providers_checked.get(provider, False)
-	return state.get('balance_increased') is True
+	return state.get('checked_in') is True or state.get('balance_increased') is True
 
 
-def mark_checked_in_with_balance_change_today(
-	details, run_time: str, provider: str | None = None, account_keys: list | None = None
-):
-	"""记录今天已经出现过签到余额增长"""
+def mark_checked_in_today(details, run_time: str, provider: str | None = None, account_keys: list | None = None):
+	"""记录今天已经成功处理的账号，并在跨日时清空旧标记。"""
 	state = load_daily_check_in_state()
-	state['date'] = datetime.now().strftime('%Y-%m-%d')
+	today = datetime.now().strftime('%Y-%m-%d')
+	if state.get('date') != today:
+		state = {}
+	state['date'] = today
 	state['run_time'] = run_time
 	if account_keys:
 		accounts_checked = state.get('accounts_checked', {})
@@ -100,7 +100,7 @@ def mark_checked_in_with_balance_change_today(
 		providers_checked = state.get('providers_checked', {})
 		providers_checked[provider] = True
 		state['providers_checked'] = providers_checked
-	state['balance_increased'] = True
+	state['checked_in'] = True
 	state['details'] = details
 	save_daily_check_in_state(state)
 
@@ -182,22 +182,16 @@ async def get_waf_cookies_with_browser(
 	account_name: str,
 	login_url: str,
 	required_cookies: list[str],
-	*,
-	use_proxy: bool = False,
 ):
 	"""使用浏览器获取 WAF cookies（带 httpx fallback）"""
 	print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
 
-	launch_kwargs: dict = {'headless': True}
-	proxy = get_playwright_proxy(use_proxy=use_proxy)
-	if proxy:
-		launch_kwargs['proxy'] = proxy
 	browser = None
 
 	try:
 		from cloakbrowser import launch_async
 
-		browser = await launch_async(**launch_kwargs)
+		browser = await launch_async(headless=True)
 		page = await browser.new_page()
 		await prepare_browser_page(page)
 		print(f'[PROCESSING] {account_name}: Access login page to get initial cookies...')
@@ -218,12 +212,12 @@ async def get_waf_cookies_with_browser(
 
 		if not waf_cookies:
 			print(f'[WARN] {account_name}: No WAF cookies from browser, trying httpx fallback...')
-			return await _get_waf_cookies_via_httpx(login_url, required_cookies, use_proxy)
+			return await _get_waf_cookies_via_httpx(login_url, required_cookies)
 
 		missing_cookies = [c for c in required_cookies if c not in waf_cookies]
 		if missing_cookies:
 			print(f'[WARN] {account_name}: Missing {missing_cookies} from browser, trying httpx fallback...')
-			httpx_cookies = await _get_waf_cookies_via_httpx(login_url, required_cookies, use_proxy)
+			httpx_cookies = await _get_waf_cookies_via_httpx(login_url, required_cookies)
 			if httpx_cookies:
 				waf_cookies = {**waf_cookies, **httpx_cookies}
 		missing_cookies = [c for c in required_cookies if not waf_cookies.get(c)]
@@ -237,7 +231,7 @@ async def get_waf_cookies_with_browser(
 	except Exception as e:
 		print(f'[WARN] {account_name}: Browser WAF fetch failed ({type(e).__name__}), trying httpx fallback...')
 		try:
-			result = await _get_waf_cookies_via_httpx(login_url, required_cookies, use_proxy)
+			result = await _get_waf_cookies_via_httpx(login_url, required_cookies)
 			if result:
 				return result
 		except Exception as e2:
@@ -252,17 +246,12 @@ async def get_waf_cookies_with_browser(
 				pass
 
 
-async def _get_waf_cookies_via_httpx(login_url: str, required_cookies: list[str], use_proxy: bool) -> dict | None:
+async def _get_waf_cookies_via_httpx(login_url: str, required_cookies: list[str]) -> dict | None:
 	"""通过 httpx 访问登录页获取基础 WAF cookies（acw_tc, cdn_sec_tc 等）"""
 	import httpx as _httpx
 
-	proxy_url = get_proxy_server(use_proxy=use_proxy)
-	client_kw: dict = {'http2': True, 'timeout': 20.0, 'follow_redirects': True}
-	if proxy_url:
-		client_kw['proxy'] = proxy_url
-
 	try:
-		async with _httpx.AsyncClient(**client_kw) as client:
+		async with _httpx.AsyncClient(http2=True, timeout=20.0, follow_redirects=True) as client:
 			resp = await client.get(
 				login_url,
 				headers={
@@ -311,13 +300,8 @@ async def login_with_credentials(
 		f'humanize={settings.humanize}, timeout={timeout_ms}ms'
 	)
 
-	print(
-		f'[INFO] {account_name}: Provider proxy={"enabled" if provider_config.use_proxy else "disabled"} '
-		f'({provider_name})'
-	)
-
 	try:
-		context = await launch_login_context(settings, use_proxy=provider_config.use_proxy)
+		context = await launch_login_context(settings)
 	except Exception as e:
 		print(f'[FAILED] {account_name}: Browser launch failed: {e}')
 		return None
@@ -416,7 +400,6 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 			account_name,
 			login_url,
 			provider_config.waf_cookie_names,
-			use_proxy=provider_config.use_proxy,
 		)
 		if not waf_cookies:
 			if user_cookies:
@@ -604,7 +587,6 @@ async def check_in_account(
 		account_name,
 		provider_config,
 		api_user_override=resolved_api_user,
-		use_proxy=provider_config.use_proxy,
 		skip_check_in=skip_check_in,
 	)
 
@@ -616,23 +598,11 @@ def run_check_in_requests(
 	provider_config,
 	*,
 	api_user_override: str | None = None,
-	use_proxy: bool = False,
 	skip_check_in: bool = False,
 ) -> tuple[bool, dict | None, dict | None]:
 	"""执行 HTTP 签到请求（同步，避免在 async 上下文中使用阻塞 httpx）。"""
 	try:
-		client_kwargs: dict = {'http2': True, 'timeout': 30.0}
-		proxy_url = get_proxy_server(use_proxy=use_proxy)
-		if proxy_url:
-			client_kwargs['proxy'] = proxy_url
-			if is_debug_enabled():
-				print(f'[INFO] {account_name}: HTTP client proxy enabled: {proxy_url}')
-			else:
-				print(f'[INFO] {account_name}: HTTP client proxy enabled')
-		elif use_proxy:
-			print(f'[WARN] {account_name}: Provider requires proxy but CHECKIN_PROXY_URL is not set')
-
-		with httpx.Client(**client_kwargs) as client:
+		with httpx.Client(http2=True, timeout=30.0) as client:
 			client.cookies.update(all_cookies)
 
 			headers = {
@@ -689,11 +659,6 @@ async def main():
 
 	if is_debug_enabled():
 		print('[INFO] DEBUG_MODE enabled')
-		proxy_server = os.getenv('CHECKIN_PROXY_URL', '').strip() or os.getenv('ANYROUTER_PROXY', '').strip()
-		if proxy_server:
-			print(f'[INFO] Proxy endpoint available: {proxy_server} (enabled per provider use_proxy)')
-		else:
-			print('[INFO] No proxy endpoint set; providers with use_proxy=true will run without proxy')
 	else:
 		print('[INFO] Debug mode disabled (set DEBUG_MODE=true to enable screenshots and verbose logs)')
 
@@ -702,10 +667,6 @@ async def main():
 
 	app_config = AppConfig.load_from_env()
 	print(f'[INFO] Loaded {len(app_config.providers)} provider configuration(s)')
-	if is_debug_enabled():
-		for provider_name, provider in sorted(app_config.providers.items()):
-			print(f'[INFO] Provider "{provider_name}": use_proxy={provider.use_proxy}')
-
 	accounts = load_accounts_config()
 	if not accounts:
 		error_msg = '[FAILED] Unable to load account configuration, program exits'
@@ -729,9 +690,9 @@ async def main():
 		account_key = get_account_state_key(account)
 		legacy_account_key = f'account_{i + 1}'
 		account_name = account.get_display_name(i)
-		skip_check_in = has_checked_in_with_balance_change_today(
-			account_key=account_key
-		) or has_checked_in_with_balance_change_today(account_key=legacy_account_key)
+		skip_check_in = has_checked_in_today(account_key=account_key) or has_checked_in_today(
+			account_key=legacy_account_key
+		)
 
 		# 检查该账号今日是否已成功签到（仅跳过已成功的账号，失败的账号仍需重试）
 		if skip_check_in:
@@ -878,7 +839,7 @@ async def main():
 				]
 				if not provider_account_keys:
 					continue
-				mark_checked_in_with_balance_change_today(
+				mark_checked_in_today(
 					account_check_in_details, current_time, provider=provider, account_keys=provider_account_keys
 				)
 

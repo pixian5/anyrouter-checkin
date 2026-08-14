@@ -232,29 +232,11 @@
 - `agentrouter`：
   - `bypass_method: "waf_cookies"`（需要获取 `acw_tc`）
   - `sign_in_path: null`（查询用户信息时自动签到）
-  - `use_proxy: true`
 
 **重要提示**：
 
 - `PROVIDERS` 是可选的，不配置则使用内置的 `anyrouter` 和 `agentrouter`
 - 自定义的 provider 配置会覆盖同名的默认配置
-
-## 代理配置（可选）
-
-内置的 `agentrouter` 默认 `use_proxy: true`。如果你的运行环境访问该平台不稳定，可以配置 mihomo 订阅代理。
-
-在运行环境的 secret 管理器中配置：
-
-- `PROXY_SUBSCRIPTION_URL`：Clash/Mihomo 订阅链接。使用部署脚本启动本地代理后，将地址写入 `CHECKIN_PROXY_URL`。
-
-本地运行时也可以直接使用已有代理：
-
-```bash
-CHECKIN_PROXY_URL=http://127.0.0.1:7890
-PROVIDERS={"agentrouter":{"use_proxy":true}}
-```
-
-如果使用订阅脚本，默认会用 `https://www.google.com/generate_204` 测试代理连通性；也可以通过 `PROXY_TEST_URL` 覆盖。
 
 ## 开启通知
 
@@ -336,8 +318,6 @@ uv run python -m cloakbrowser install
 # 示例：
 # ANYROUTER_ACCOUNTS=[{"name":"账号1","email":"your@email.com","password":"your_password"}]
 # PROVIDERS={"agentrouter":{"domain":"https://agentrouter.org"}}
-# PROXY_SUBSCRIPTION_URL=https://example.com/sub?token=xxx
-# CHECKIN_PROXY_URL=http://127.0.0.1:7890
 
 # 运行签到脚本
 uv run checkin.py
@@ -345,7 +325,9 @@ uv run checkin.py
 
 运行时默认使用无头浏览器。如需调整浏览器行为，使用项目实际读取的 `CHECKIN_HEADLESS`、`CHECKIN_BROWSER_PROFILE_DIR` 和 `CHECKIN_WAIT_TIMEOUT_MS` 环境变量。
 
-服务器上的旧签到任务和 systemd 部署已移除；请在你自己的受控运行环境中调用 `uv run checkin.py`。
+GitHub 仓库不运行自动签到 workflow。受控服务器可通过 systemd timer 调用 `uv run checkin.py`，账号与通知凭据只保存在服务器 `.env`。
+
+程序不读取代理地址，也不启动或选择代理节点。服务器需要按域名分流时，由系统级 sing-box TUN 路由独立完成，详见 `docs/server-sing-box-routing.md`。
 
 ## 测试
 

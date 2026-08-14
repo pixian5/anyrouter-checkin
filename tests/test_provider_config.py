@@ -39,14 +39,14 @@ def test_custom_provider_profile_persistence_defaults_to_false(monkeypatch):
 
 
 def test_partial_builtin_provider_override_inherits_defaults(monkeypatch):
-	monkeypatch.setenv('PROVIDERS', json.dumps({'anyrouter': {'use_proxy': True}}))
+	monkeypatch.setenv('PROVIDERS', json.dumps({'anyrouter': {'persist_profile': False}}))
 
 	config = AppConfig.load_from_env()
 	provider = config.get_provider('anyrouter')
 
 	assert provider is not None
 	assert provider.domain == 'https://anyrouter.top'
-	assert provider.use_proxy is True
+	assert provider.persist_profile is False
 
 
 def test_provider_from_dict_inherits_profile_persistence_from_defaults():

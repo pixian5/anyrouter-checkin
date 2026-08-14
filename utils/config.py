@@ -22,7 +22,6 @@ class ProviderConfig:
 	api_user_key: str = 'new-api-user'
 	bypass_method: Literal['waf_cookies'] | None = None
 	waf_cookie_names: List[str] | None = None
-	use_proxy: bool = False
 	persist_profile: bool = False
 
 	def __post_init__(self):
@@ -47,9 +46,8 @@ class ProviderConfig:
 
 		配置格式:
 		- 基础: {"domain": "https://example.com"}
-		- 完整: {"domain": "https://example.com", "login_path": "/login", "use_proxy": true, ...}
+		- 完整: {"domain": "https://example.com", "login_path": "/login", ...}
 		"""
-		default_use_proxy = defaults.use_proxy if defaults else False
 		default_persist_profile = defaults.persist_profile if defaults else False
 		default_domain = defaults.domain if defaults else None
 		if not data.get('domain') and not default_domain:
@@ -64,7 +62,6 @@ class ProviderConfig:
 			api_user_key=data.get('api_user_key', defaults.api_user_key if defaults else 'new-api-user'),
 			bypass_method=data.get('bypass_method', defaults.bypass_method if defaults else None),
 			waf_cookie_names=data.get('waf_cookie_names', defaults.waf_cookie_names if defaults else None),
-			use_proxy=data.get('use_proxy', default_use_proxy),
 			persist_profile=data.get('persist_profile', default_persist_profile),
 		)
 
@@ -96,7 +93,6 @@ class AppConfig:
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',
 				waf_cookie_names=['acw_tc', 'cdn_sec_tc', 'acw_sc__v2'],
-				use_proxy=False,
 				persist_profile=True,
 			),
 			'agentrouter': ProviderConfig(
@@ -108,7 +104,6 @@ class AppConfig:
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',
 				waf_cookie_names=['acw_tc'],
-				use_proxy=True,
 				persist_profile=False,
 			),
 		}
