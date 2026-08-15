@@ -8,7 +8,9 @@ import hashlib
 import json
 import os
 import sys
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 if hasattr(sys.stdout, 'reconfigure'):
 	sys.stdout.reconfigure(line_buffering=True)
@@ -39,6 +41,28 @@ load_dotenv()
 
 BALANCE_HASH_FILE = 'balance_hash.txt'
 DAILY_CHECK_IN_STATE_FILE = 'daily_checkin_state.json'
+
+
+@dataclass(frozen=True)
+class CheckInOutcome:
+	"""签到接口的明确结果，避免把模糊响应写入成功状态。"""
+
+	status: Literal['success', 'already_checked', 'failed']
+	message: str = ''
+
+	@property
+	def handled(self) -> bool:
+		return self.status != 'failed'
+
+
+_ALREADY_CHECKED_KEYWORDS = ('已经签到', '已签到', '重复签到', 'already checked', 'already signed')
+_SUCCESS_MESSAGE_KEYWORDS = (
+	'签到成功',
+	'签到完成',
+	'check-in successful',
+	'successfully checked in',
+	'signed in successfully',
+)
 
 
 def load_daily_check_in_state():
@@ -472,8 +496,66 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 	return {**user_cookies, **waf_cookies}
 
 
-def execute_check_in(client, account_name: str, provider_config, headers: dict):
-	"""执行签到请求"""
+def _check_in_response_text(payload: object) -> str:
+	"""提取签到响应中的可判定文本，不记录完整响应避免泄露无关数据。"""
+	if isinstance(payload, str):
+		return payload
+	if isinstance(payload, dict):
+		parts = []
+		for key in ('msg', 'message', 'detail', 'info', 'error', 'data'):
+			value = payload.get(key)
+			if isinstance(value, (str, dict, list)):
+				parts.append(_check_in_response_text(value))
+		return ' '.join(part for part in parts if part)
+	if isinstance(payload, list):
+		return ' '.join(_check_in_response_text(item) for item in payload)
+	return ''
+
+
+def parse_check_in_response(response) -> CheckInOutcome:
+	"""严格解析签到接口响应。
+
+	`code=0` 仅表示请求被接口接受，不能单独证明签到成功；必须有明确成功标记、
+	明确的成功消息，或明确的“已签到”消息。
+	"""
+	if response.status_code != 200:
+		return CheckInOutcome('failed', f'HTTP {response.status_code}')
+
+	try:
+		payload = response.json()
+	except json.JSONDecodeError:
+		body = response.text.strip().lower()
+		if body in {'success', 'ok'} or any(keyword.lower() in body for keyword in _SUCCESS_MESSAGE_KEYWORDS):
+			return CheckInOutcome('success', response.text.strip()[:120])
+		return CheckInOutcome('failed', 'Invalid or ambiguous response format')
+
+	if not isinstance(payload, dict):
+		return CheckInOutcome('failed', 'Invalid response format')
+
+	message = _check_in_response_text(payload).strip()
+	message_lower = message.lower()
+	if any(keyword.lower() in message_lower for keyword in _ALREADY_CHECKED_KEYWORDS):
+		return CheckInOutcome('already_checked', message[:120])
+	if payload.get('success') is True or payload.get('ret') == 1:
+		return CheckInOutcome('success', message[:120])
+	if payload.get('code') == 0 and any(keyword.lower() in message_lower for keyword in _SUCCESS_MESSAGE_KEYWORDS):
+		return CheckInOutcome('success', message[:120])
+	if message:
+		return CheckInOutcome('failed', message[:120])
+	return CheckInOutcome('failed', 'Ambiguous response: code=0 without an explicit success marker')
+
+
+def _annotate_check_in_status(user_info: dict | None, status: str) -> dict | None:
+	"""在用户信息结果中携带内部签到状态，避免扩展公开返回值结构。"""
+	if not user_info:
+		return user_info
+	annotated = dict(user_info)
+	annotated['_check_in_status'] = status
+	return annotated
+
+
+def execute_check_in(client, account_name: str, provider_config, headers: dict) -> CheckInOutcome:
+	"""执行签到请求并返回明确的三态结果。"""
 	print(f'[NETWORK] {account_name}: Executing check-in')
 
 	checkin_headers = headers.copy()
@@ -483,31 +565,14 @@ def execute_check_in(client, account_name: str, provider_config, headers: dict):
 	response = client.post(sign_in_url, headers=checkin_headers, timeout=30)
 
 	print(f'[RESPONSE] {account_name}: Response status code {response.status_code}')
-
-	if response.status_code == 200:
-		try:
-			result = response.json()
-			if result.get('ret') == 1 or result.get('code') == 0 or result.get('success'):
-				print(f'[SUCCESS] {account_name}: Check-in successful!')
-				return True
-			else:
-				error_msg = result.get('msg', result.get('message', 'Unknown error'))
-				already_checked_keywords = ['已经签到', '已签到', '重复签到', 'already checked', 'already signed']
-				if any(keyword in error_msg.lower() for keyword in already_checked_keywords):
-					print(f'[SUCCESS] {account_name}: Already checked in today')
-					return True
-				print(f'[FAILED] {account_name}: Check-in failed - {error_msg}')
-				return False
-		except json.JSONDecodeError:
-			if 'success' in response.text.lower():
-				print(f'[SUCCESS] {account_name}: Check-in successful!')
-				return True
-			else:
-				print(f'[FAILED] {account_name}: Check-in failed - Invalid response format')
-				return False
+	outcome = parse_check_in_response(response)
+	if outcome.status == 'success':
+		print(f'[SUCCESS] {account_name}: Check-in response confirmed success')
+	elif outcome.status == 'already_checked':
+		print(f'[INFO] {account_name}: Already checked in today')
 	else:
-		print(f'[FAILED] {account_name}: Check-in failed - HTTP {response.status_code}')
-		return False
+		print(f'[FAILED] {account_name}: Check-in failed - {outcome.message}')
+	return outcome
 
 
 def format_check_in_notification(detail: dict, check_in_time: str | None = None) -> str:
@@ -689,20 +754,28 @@ def run_check_in_requests(
 				print(user_info_before.get('error', 'Unknown error'))
 
 			if provider_config.needs_manual_check_in() and not skip_check_in:
-				success = execute_check_in(client, account_name, provider_config, headers)
+				check_in_outcome = execute_check_in(client, account_name, provider_config, headers)
 				user_info_after = get_user_info(client, headers, user_info_url)
-				if success and not (user_info_after and user_info_after.get('success')):
+				if check_in_outcome.handled and not (user_info_after and user_info_after.get('success')):
 					print(f'[FAILED] {account_name}: Check-in succeeded but post-check-in balance query failed')
-					return False, user_info_before, user_info_after
-				return success, user_info_before, user_info_after
+					return False, user_info_before, _annotate_check_in_status(user_info_after, 'failed')
+				return (
+					check_in_outcome.handled,
+					user_info_before,
+					_annotate_check_in_status(user_info_after, check_in_outcome.status),
+				)
 			if skip_check_in:
 				user_info_after = get_user_info(client, headers, user_info_url)
-				return bool(user_info_after and user_info_after.get('success')), user_info_before, user_info_after
+				return (
+					bool(user_info_after and user_info_after.get('success')),
+					user_info_before,
+					_annotate_check_in_status(user_info_after, 'already_checked'),
+				)
 
 			user_info_after = get_user_info(client, headers, user_info_url)
 			if user_info_after and user_info_after.get('success'):
 				print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
-				return True, user_info_before, user_info_after
+				return True, user_info_before, _annotate_check_in_status(user_info_after, 'success')
 			error = user_info_after.get('error', 'Unknown error') if user_info_after else 'Unknown error'
 			print(f'[FAILED] {account_name}: Auto check-in failed - {error}')
 			return False, user_info_before, user_info_after
@@ -785,6 +858,11 @@ async def main():
 			success, user_info_before, user_info_after = await check_in_account(
 				account, i, app_config, skip_check_in=skip_check_in
 			)
+			check_in_status = (
+				user_info_after.get('_check_in_status', 'success' if success else 'failed')
+				if user_info_after
+				else ('success' if success else 'failed')
+			)
 			if success:
 				success_count += 1
 
@@ -816,7 +894,8 @@ async def main():
 						'usage_increase': after_used - before_used,
 						'balance_change': balance_change,
 						'success': success,
-						'skipped': skip_check_in,
+						'skipped': skip_check_in or check_in_status == 'already_checked',
+						'check_in_status': check_in_status,
 					}
 				else:
 					account_check_in_details[account_key] = {
@@ -831,7 +910,8 @@ async def main():
 						'balance_change': None,
 						'success': success,
 						'error': user_info_before.get('error') if user_info_before else '',
-						'skipped': skip_check_in,
+						'skipped': skip_check_in or check_in_status == 'already_checked',
+						'check_in_status': check_in_status,
 					}
 			else:
 				error_msg = user_info_after.get('error', 'Login failed') if user_info_after else 'Login failed'

@@ -119,3 +119,20 @@ async def test_main_returns_failure_when_only_some_accounts_succeed(monkeypatch,
 
 	assert exc_info.value.code == 1
 	push_message.assert_called_once()
+
+
+async def test_main_does_not_mark_ambiguous_check_in_as_checked(monkeypatch, tmp_path):
+	accounts = [_account('one')]
+	push_message = _configure_main(monkeypatch, tmp_path, accounts)
+
+	async def ambiguous_check_in(*args, **kwargs):
+		return False, _user_info(100), {'success': False, 'error': 'Ambiguous response'}
+
+	monkeypatch.setattr(checkin, 'check_in_account', ambiguous_check_in)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 1
+	assert not (tmp_path / 'daily_checkin_state.json').exists()
+	push_message.assert_called_once()

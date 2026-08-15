@@ -1,16 +1,20 @@
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 import checkin
 from checkin import (
+	CheckInOutcome,
+	execute_check_in,
 	generate_balance_hash,
 	get_account_state_key,
 	get_skipped_account_detail,
 	legacy_account_state_matches,
 	mark_checked_in_today,
+	parse_check_in_response,
 	prepare_cookies,
 	should_send_notification,
 )
@@ -62,6 +66,47 @@ def test_notification_is_sent_for_a_check_in_failure():
 
 def test_first_snapshot_without_a_balance_change_does_not_notify():
 	assert not should_send_notification(balance_changed=False, has_failures=False)
+
+
+def test_code_zero_without_explicit_success_is_not_a_success():
+	response = MagicMock(status_code=200)
+	response.json.return_value = {'code': 0}
+
+	outcome = parse_check_in_response(response)
+
+	assert outcome == CheckInOutcome('failed', 'Ambiguous response: code=0 without an explicit success marker')
+
+
+def test_already_checked_response_is_handled_without_being_new_success():
+	response = MagicMock(status_code=200)
+	response.json.return_value = {'code': 0, 'message': '今日已签到'}
+
+	outcome = parse_check_in_response(response)
+
+	assert outcome.status == 'already_checked'
+	assert outcome.handled
+
+
+def test_explicit_success_response_is_confirmed():
+	response = MagicMock(status_code=200)
+	response.json.return_value = {'code': 0, 'message': '签到成功，获得 $25'}
+
+	outcome = parse_check_in_response(response)
+
+	assert outcome.status == 'success'
+	assert outcome.handled
+
+
+def test_execute_check_in_does_not_accept_ambiguous_code_zero():
+	response = MagicMock(status_code=200)
+	response.json.return_value = {'code': 0}
+	client = MagicMock()
+	client.post.return_value = response
+	provider = ProviderConfig(name='anyrouter', domain='https://anyrouter.top')
+
+	outcome = execute_check_in(client, 'account', provider, {})
+
+	assert outcome.status == 'failed'
 
 
 def test_account_state_key_is_stable_when_account_order_changes():
