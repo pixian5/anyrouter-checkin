@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from utils.debug import debug_print, is_debug_enabled
 from utils.popups import dismiss_popups, setup_popup_guard
@@ -296,14 +296,14 @@ async def launch_login_context(settings: BrowserLoginSettings) -> BrowserContext
 		from cloakbrowser import launch_persistent_context_async
 
 		settings.profile_dir.mkdir(parents=True, exist_ok=True)
-		return await launch_persistent_context_async(str(settings.profile_dir), **launch_kwargs)
+		return cast('BrowserContext', await launch_persistent_context_async(str(settings.profile_dir), **launch_kwargs))
 
 	from cloakbrowser import launch_async
 
 	context_kwargs = {'viewport': launch_kwargs.pop('viewport')}
 	browser = await launch_async(**launch_kwargs)
 	context = await browser.new_context(**context_kwargs)
-	return _EphemeralBrowserContext(context, browser)
+	return cast('BrowserContext', _EphemeralBrowserContext(context, browser))
 
 
 def get_screenshot_dir() -> Path:
@@ -366,7 +366,9 @@ async def wait_for_site_ready(page: Page, timeout_ms: int = WAF_READY_TIMEOUT_MS
 		print(f'[INFO] Dismissed {closed} popup dialog(s)')
 
 
-async def _wait_for_optional_load_state(page: Page, state: str, timeout_ms: int) -> bool:
+async def _wait_for_optional_load_state(
+	page: Page, state: Literal['domcontentloaded', 'load', 'networkidle'], timeout_ms: int
+) -> bool:
 	try:
 		await page.wait_for_load_state(state, timeout=timeout_ms)
 		return True
@@ -594,12 +596,14 @@ async def verify_browser_login(
 				captured_profile = profile
 				verified.set()
 				return
-		except Exception:  # nosec B112
+		except Exception:  # nosec B110
 			pass
 		# Also capture any /login /auth /signin /session 4xx responses for debugging
 		try:
 			url = response.url
-			if not any(k in url.lower() for k in ('login', 'auth', 'signin', 'session', 'oauth', 'password', 'forgot', 'reset')):
+			if not any(
+				k in url.lower() for k in ('login', 'auth', 'signin', 'session', 'oauth', 'password', 'forgot', 'reset')
+			):
 				return
 			status = response.status
 			if status < 400:
@@ -607,7 +611,7 @@ async def verify_browser_login(
 			content_type = ''
 			try:
 				content_type = response.headers.get('content-type', '') or ''
-			except Exception:  # nosec B112
+			except Exception:  # nosec B110
 				pass
 			if 'json' in content_type.lower() or 'text' in content_type.lower():
 				snippet = '<unavailable>'
@@ -617,7 +621,7 @@ async def verify_browser_login(
 				except Exception:  # nosec B112
 					snippet = '<body read failed>'
 				debug_print(f'[DIAG] Auth failed response: url={url!r} status={status} body={snippet!r}')
-		except Exception:  # nosec B112
+		except Exception:  # nosec B110
 			pass
 
 	page.on('response', on_response)
@@ -687,20 +691,25 @@ async def _dismiss_blocking_overlays(page: Page) -> None:
 async def _click_locator(button: Locator) -> bool:
 	# 收集所有点击方式，逐个尝试：普通click、force click、键盘Enter/Space、JS dispatch
 	strategies: list[tuple[str, Callable[[], Awaitable[None]]]] = []
+
 	async def _normal():
 		await button.scroll_into_view_if_needed()
 		await button.click(timeout=FORM_ACTION_TIMEOUT_MS)
+
 	async def _force():
 		await button.scroll_into_view_if_needed()
 		await button.click(force=True, timeout=FORM_ACTION_TIMEOUT_MS)
+
 	async def _focus_enter():
 		await button.scroll_into_view_if_needed()
 		await button.focus()
 		await button.page.keyboard.press('Enter')
+
 	async def _focus_space():
 		await button.scroll_into_view_if_needed()
 		await button.focus()
 		await button.page.keyboard.press(' ')
+
 	async def _js_dispatch():
 		await button.evaluate(
 			"""el => {
@@ -714,6 +723,7 @@ async def _click_locator(button: Locator) -> bool:
 				if (typeof el.click === 'function') { try { el.click(); } catch {} }
 			}"""
 		)
+
 	strategies.append(('normal', _normal))
 	strategies.append(('force', _force))
 	strategies.append(('focus+Enter', _focus_enter))
@@ -781,7 +791,9 @@ async def _click_email_login_entry(page: Page) -> bool:
 				if await _click_locator(candidate):
 					debug_print('[INFO] Semantic match clicked. post-click waiting 1.5s...')
 					await asyncio.sleep(1.5)
-					if await _is_email_form_visible(page) or await _wait_for_username_input(page, min(6000, FORM_ACTION_TIMEOUT_MS)):
+					if await _is_email_form_visible(page) or await _wait_for_username_input(
+						page, min(6000, FORM_ACTION_TIMEOUT_MS)
+					):
 						debug_print('[INFO] Email form visible after semantic click => SUCCESS')
 						return True
 					debug_print('[INFO] Email form still not visible after semantic click')
@@ -816,14 +828,22 @@ async def _click_email_login_entry(page: Page) -> bool:
 						html_snippet = await button.evaluate('el => el.outerHTML.slice(0, 600)') or ''
 					except Exception:  # nosec B110
 						html_snippet = ''
-					if not re.search(r'semi-icon-mail|aria-label.*mail|aria-label.*email|icon.*mail|svg.*mail|envelope', html_snippet, re.I):
-						debug_print(f'[INFO] selector#{index} skipped (no text/mail match): {txt!r} html={html_snippet[:160]!r}')
+					if not re.search(
+						r'semi-icon-mail|aria-label.*mail|aria-label.*email|icon.*mail|svg.*mail|envelope',
+						html_snippet,
+						re.I,
+					):
+						debug_print(
+							f'[INFO] selector#{index} skipped (no text/mail match): {txt!r} html={html_snippet[:160]!r}'
+						)
 						continue
 				debug_print(f'[INFO] Attempting selector#{index}: text={txt!r}')
 				if await _click_locator(button):
 					debug_print('[INFO] selector click succeeded; post-click waiting 1.5s')
 					await asyncio.sleep(1.5)
-					if await _is_email_form_visible(page) or await _wait_for_username_input(page, min(6000, FORM_ACTION_TIMEOUT_MS)):
+					if await _is_email_form_visible(page) or await _wait_for_username_input(
+						page, min(6000, FORM_ACTION_TIMEOUT_MS)
+					):
 						debug_print('[INFO] Email form visible after selector click => SUCCESS')
 						return True
 					debug_print('[INFO] Email form not visible after selector click')
@@ -876,7 +896,9 @@ async def _click_email_login_entry(page: Page) -> bool:
 		debug_print(f'[INFO] JS dispatch result: {clicked}')
 		if clicked and clicked.get('clicked'):
 			await asyncio.sleep(1.5)
-			if await _is_email_form_visible(page) or await _wait_for_username_input(page, min(6000, FORM_ACTION_TIMEOUT_MS)):
+			if await _is_email_form_visible(page) or await _wait_for_username_input(
+				page, min(6000, FORM_ACTION_TIMEOUT_MS)
+			):
 				debug_print('[INFO] Email form visible after JS dispatch => SUCCESS')
 				return True
 	except Exception as e:  # nosec B112
@@ -1147,6 +1169,7 @@ async def _count_login_form_inputs(page: Page) -> tuple[int, int]:
 	"""仅统计**可见且可填充**的输入框数量。
 	SPA登录成功后inputs通常从DOM移除或被隐藏，此时应该立即跳出登录循环。
 	"""
+
 	async def _cnt(sels) -> int:
 		cnt = 0
 		for s in sels:
@@ -1156,17 +1179,24 @@ async def _count_login_form_inputs(page: Page) -> tuple[int, int]:
 				for i in range(n):
 					try:
 						it = loc.nth(i)
-						if (await it.element_handle(timeout=500)) and (await it.is_visible()) and not (await it.is_disabled()):
+						if (
+							(await it.element_handle(timeout=500))
+							and (await it.is_visible())
+							and not (await it.is_disabled())
+						):
 							cnt += 1
-					except Exception:  # nosec B112
+					except Exception:  # nosec B110
 						pass
-			except Exception:  # nosec B112
+			except Exception:  # nosec B110
 				pass
 		return cnt
+
 	return await _cnt(USERNAME_SELECTORS), await _cnt(PASSWORD_SELECTORS)
 
 
-async def _submit_happened(page_before_url: str, page_after_url: str, inputs_before: tuple[int, int], inputs_after: tuple[int, int]) -> bool:
+async def _submit_happened(
+	page_before_url: str, page_after_url: str, inputs_before: tuple[int, int], inputs_after: tuple[int, int]
+) -> bool:
 	"""判断点击提交按钮后是否真的触发了提交/跳转/表单变化；但要排除跳错页（如/reset、/register）。"""
 	if page_after_url != page_before_url:
 		return True
@@ -1180,6 +1210,7 @@ async def _submit_happened(page_before_url: str, page_after_url: str, inputs_bef
 def _submit_destination_ok(origin_url: str, current_url: str) -> bool:
 	"""按钮点击后跳转到的 URL 是否在"预期方向"。允许 /console、/dashboard、原 login 页本身（表单在处理），禁止 /reset/register 等。"""
 	from urllib.parse import urlparse
+
 	o = urlparse(origin_url)
 	c = urlparse(current_url)
 	# 域名或协议变了 -> 一般是正确外部 OAuth 重定向（我们不用），先允许
@@ -1199,8 +1230,17 @@ def _submit_destination_ok(origin_url: str, current_url: str) -> bool:
 		return True
 	# 负向：/reset /forgot /register /signup /signup/invite 等一律禁止
 	NEG_PATHS = (
-		'/reset', '/forgot', '/recover', '/password-reset', '/password_reset',
-		'/register', '/signup', '/sign-up', '/join', '/invite', '/verify',
+		'/reset',
+		'/forgot',
+		'/recover',
+		'/password-reset',
+		'/password_reset',
+		'/register',
+		'/signup',
+		'/sign-up',
+		'/join',
+		'/invite',
+		'/verify',
 	)
 	low = path.lower()
 	for n in NEG_PATHS:
@@ -1219,7 +1259,9 @@ async def submit_login_form(page: Page, timeout_ms: int) -> bool:
 	baseline_url = page.url
 	baseline_inputs = await _count_login_form_inputs(page)
 	already_tried: list[Locator] = []
-	debug_print(f'[INFO] submit_login_form start: URL={baseline_url} inputs_user={baseline_inputs[0]} inputs_pw={baseline_inputs[1]}')
+	debug_print(
+		f'[INFO] submit_login_form start: URL={baseline_url} inputs_user={baseline_inputs[0]} inputs_pw={baseline_inputs[1]}'
+	)
 
 	async def _candidate_skip(submit: Locator) -> str | None:
 		"""如果候选按钮不应被点，返回原因文本；否则返回 None。"""
@@ -1232,11 +1274,12 @@ async def submit_login_form(page: Page, timeout_ms: int) -> bool:
 			try:
 				if await submit.evaluate('(a, b) => a === b', t):
 					return 'duplicate'
-			except Exception:  # nosec B112
+			except Exception:  # nosec B110
 				pass
 		try:
 			disabled = await submit.evaluate(
-				'el => !!el.closest?.("[disabled], [aria-disabled=\"true\"]") || !!el.disabled || el.getAttribute?.("aria-disabled") === "true"'
+				"""el => !!el.closest?.('[disabled], [aria-disabled="true"]')
+				|| !!el.disabled || el.getAttribute?.('aria-disabled') === 'true'"""
 			)
 			if disabled:
 				return 'disabled'
@@ -1246,14 +1289,14 @@ async def submit_login_form(page: Page, timeout_ms: int) -> bool:
 			text_parts = []
 			try:
 				text_parts.append(await submit.inner_text(timeout=1500) or '')
-			except Exception:
+			except Exception:  # nosec B110
 				pass
 			for attr in ('aria-label', 'title', 'value', 'placeholder'):
 				try:
 					v = await submit.get_attribute(attr)
 					if v:
 						text_parts.append(v)
-				except Exception:
+				except Exception:  # nosec B110
 					pass
 			joined = ' '.join(text_parts)
 			if _label_suspicious(joined):
@@ -1335,12 +1378,12 @@ async def submit_login_form(page: Page, timeout_ms: int) -> bool:
 			try:
 				loc = scope.get_by_role('button', name=pattern).first
 				candidates.append((loc, f'role: {pattern.pattern!r} @{scope_name}'))
-			except Exception:  # nosec B112
+			except Exception:  # nosec B110
 				pass
 	for i, selector in enumerate(SUBMIT_SELECTORS):
 		try:
 			candidates.append((page.locator(selector).first, f'sel[{i}]: {selector}'))
-		except Exception:  # nosec B112
+		except Exception:  # nosec B110
 			pass
 
 	any_changed = False
@@ -1435,12 +1478,7 @@ async def login_with_email_form(
 		advanced = await submit_login_form(page, remaining_ms)
 		url_after = page.url
 		inputs_after = await _count_login_form_inputs(page)
-		progress = (
-			advanced
-			or url_before != url_after
-			or inputs_before != inputs_after
-			or await is_logged_in(page)
-		)
+		progress = advanced or url_before != url_after or inputs_before != inputs_after or await is_logged_in(page)
 		debug_print(f'[INFO] round {rounds} progress={progress} URL {url_before!r} → {url_after!r}')
 
 		# After a successful submit, wait briefly and re-check login state
@@ -1459,7 +1497,9 @@ async def login_with_email_form(
 		# usually means a successful SPA redirect (e.g. to /console),
 		# which can outrun playwright's URL read. No point in trying another fill round.
 		if inputs_after[0] == 0 or inputs_after[1] == 0:
-			debug_print(f'[INFO] Login form inputs changed after submit (username={inputs_after[0]}, password={inputs_after[1]}); likely redirected; ending rounds')
+			debug_print(
+				f'[INFO] Login form inputs changed after submit (username={inputs_after[0]}, password={inputs_after[1]}); likely redirected; ending rounds'
+			)
 			break
 		if not progress:
 			no_progress_count += 1

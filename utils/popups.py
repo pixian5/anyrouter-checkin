@@ -61,7 +61,7 @@ _DISMISS_MODALS_CORE_JS = """
 
 	const matchText = (btn, rx) => {
 		if (!btn) return false;
-		const txt = (btn.innerText || btn.textContent || '').replace(/\s+/g, ' ').trim();
+		const txt = (btn.innerText || btn.textContent || '').replace(/\\s+/g, ' ').trim();
 		return rx.test(txt);
 	};
 
@@ -119,15 +119,15 @@ _DISMISS_MODALS_CORE_JS = """
 		const buttons = [...modal.querySelectorAll('button')].filter(isVisible);
 		const rxToday = /今日关闭|Close Today|今.*?关闭/i;
 		const rxClose = /关闭公告|Close Notice/i;
-		const rxGeneric = /^\s*关闭\s*$|^\s*Close\s*$/i;
+		const rxGeneric = /^\\s*关闭\\s*$|^\\s*Close\\s*$/i;
 		for (const btn of buttons) {
-			if (rxToday.test((btn.innerText || '').replace(/\s+/g, ' ').trim())) return btn;
+			if (rxToday.test((btn.innerText || '').replace(/\\s+/g, ' ').trim())) return btn;
 		}
 		for (const btn of buttons) {
-			if (rxClose.test((btn.innerText || '').replace(/\s+/g, ' ').trim())) return btn;
+			if (rxClose.test((btn.innerText || '').replace(/\\s+/g, ' ').trim())) return btn;
 		}
 		for (const btn of buttons) {
-			if (rxGeneric.test((btn.innerText || '').replace(/\s+/g, ' ').trim())) return btn;
+			if (rxGeneric.test((btn.innerText || '').replace(/\\s+/g, ' ').trim())) return btn;
 		}
 		// 2) 选择器兜底
 		for (const selector of closeSelectors) {

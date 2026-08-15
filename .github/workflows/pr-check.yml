@@ -46,7 +46,7 @@ jobs:
           set -o pipefail
           echo "## Ruff Lint 检查" >> $GITHUB_STEP_SUMMARY
           set +e
-          uv run ruff check . --output-format=github 2>&1 | tee ruff-lint.log
+          uv run ruff check --no-fix . --output-format=github 2>&1 | tee ruff-lint.log
           status=${PIPESTATUS[0]}
           set -e
           if [ $status -eq 0 ]; then

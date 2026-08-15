@@ -40,6 +40,5 @@ jobs:
             /usr/local/bin/bz check -c /etc/bz/anyrouter-client.json
             systemctl daemon-reload
             systemctl restart anyrouter-vmess-client.service
-            systemctl restart anyrouter-checkin.timer
             systemctl is-active --quiet anyrouter-vmess-client.service
             systemctl is-active --quiet anyrouter-checkin.timer

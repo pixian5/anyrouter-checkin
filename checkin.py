@@ -125,6 +125,9 @@ def load_balance_snapshot() -> dict[str, dict[str, float]]:
 			for key, value in data.items()
 			if isinstance(value, dict) and isinstance(value.get('quota'), (int, float))
 		}
+	except json.JSONDecodeError:
+		print('[WARN] Legacy balance hash cannot restore per-account balances; waiting for a complete snapshot')
+		return {}
 	except (OSError, ValueError, TypeError, KeyError):
 		return {}
 
@@ -145,7 +148,14 @@ def save_balance_snapshot(balances: dict[str, dict[str, float]]) -> None:
 
 def generate_balance_hash(balances):
 	"""生成余额数据的hash"""
-	simple_balances = {k: {'quota': v.get('quota')} for k, v in balances.items()} if balances else {}
+	simple_balances = (
+		{
+			key: {'quota': float(value['quota']) if isinstance(value.get('quota'), (int, float)) else None}
+			for key, value in balances.items()
+		}
+		if balances
+		else {}
+	)
 	balance_json = json.dumps(simple_balances, sort_keys=True, separators=(',', ':'))
 	return hashlib.sha256(balance_json.encode('utf-8')).hexdigest()[:16]
 
@@ -172,7 +182,7 @@ def parse_cookies(cookies_data):
 
 def get_account_state_key(account: AccountConfig) -> str:
 	"""返回与账号顺序无关的稳定状态键。"""
-	identity = account.email or account.api_user
+	identity = account.email or account.api_user or account.name
 	if not identity:
 		cookies = parse_cookies(account.cookies)
 		if cookies:
@@ -180,8 +190,25 @@ def get_account_state_key(account: AccountConfig) -> str:
 				json.dumps(cookies, sort_keys=True, separators=(',', ':')).encode('utf-8')
 			).hexdigest()[:16]
 		else:
-			identity = account.name or 'unnamed'
+			identity = 'unnamed'
 	return f'{account.provider}:{identity}'
+
+
+def legacy_account_state_matches(state: dict, legacy_account_key: str, account_name: str, provider: str) -> bool:
+	"""仅在旧状态详情仍明确对应当前账号时兼容 account_N 键。"""
+	today = datetime.now().strftime('%Y-%m-%d')
+	if state.get('date') != today:
+		return False
+	accounts_checked = state.get('accounts_checked', {})
+	if not isinstance(accounts_checked, dict) or accounts_checked.get(legacy_account_key) is not True:
+		return False
+	details = state.get('details', {})
+	detail = details.get(legacy_account_key) if isinstance(details, dict) else None
+	return bool(
+		isinstance(detail, dict)
+		and detail.get('name') == account_name
+		and (detail.get('provider') or 'anyrouter') == provider
+	)
 
 
 def get_skipped_account_detail(
@@ -270,7 +297,7 @@ async def get_waf_cookies_with_browser(
 		if browser:
 			try:
 				await browser.close()
-			except Exception:
+			except Exception:  # nosec B110
 				pass
 
 
@@ -376,9 +403,12 @@ async def login_with_credentials(
 			return None
 
 		cookies = await context.cookies()
-		all_cookies = {
-			cookie.get('name'): cookie.get('value') for cookie in cookies if cookie.get('name') and cookie.get('value')
-		}
+		all_cookies: dict[str, str] = {}
+		for cookie in cookies:
+			cookie_name = cookie.get('name')
+			cookie_value = cookie.get('value')
+			if isinstance(cookie_name, str) and isinstance(cookie_value, str) and cookie_name and cookie_value:
+				all_cookies[cookie_name] = cookie_value
 		api_user = str(user_profile['id']) if user_profile.get('id') is not None else None
 
 		success_msg = f'[SUCCESS] {account_name}: Login successful, got {len(all_cookies)} cookies'
@@ -720,9 +750,10 @@ async def main():
 		account_key = get_account_state_key(account)
 		legacy_account_key = f'account_{i + 1}'
 		account_name = account.get_display_name(i)
-		skip_check_in = has_checked_in_today(account_key=account_key) or has_checked_in_today(
-			account_key=legacy_account_key
+		legacy_state_matches = legacy_account_state_matches(
+			daily_check_in_state, legacy_account_key, account_name, account.provider
 		)
+		skip_check_in = has_checked_in_today(account_key=account_key) or legacy_state_matches
 
 		# 检查该账号今日是否已成功签到（仅跳过已成功的账号，失败的账号仍需重试）
 		if skip_check_in:
@@ -730,17 +761,22 @@ async def main():
 			detail = get_skipped_account_detail(
 				daily_check_in_state,
 				account_key,
-				legacy_account_key,
+				legacy_account_key if legacy_state_matches else '',
 				account_name,
 				account.provider,
 			)
+			fallback_balance = last_balance_snapshot.get(account_key)
+			if fallback_balance is None and legacy_state_matches:
+				fallback_balance = last_balance_snapshot.get(legacy_account_key)
+			if not isinstance(detail.get('after_quota'), (int, float)) and isinstance(fallback_balance, dict):
+				fallback_quota = fallback_balance.get('quota')
+				if isinstance(fallback_quota, (int, float)):
+					detail['before_quota'] = fallback_quota
+					detail['after_quota'] = fallback_quota
 			account_check_in_details[account_key] = detail
-			if isinstance(detail.get('after_quota'), (int, float)) and isinstance(
-				detail.get('after_used'), (int, float)
-			):
+			if isinstance(detail.get('after_quota'), (int, float)):
 				current_balances[account_key] = {
 					'quota': detail['after_quota'],
-					'used': detail['after_used'],
 				}
 			success_count += 1
 			continue
@@ -957,7 +993,8 @@ async def main():
 	else:
 		print('[INFO] Balances unchanged and no check-in failures, notification skipped')
 
-	sys.exit(0 if success_count > 0 else 1)
+	all_accounts_handled = success_count == total_count and not has_failures
+	sys.exit(0 if all_accounts_handled else 1)
 
 
 def run_main():

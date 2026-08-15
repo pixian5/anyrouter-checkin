@@ -1,6 +1,6 @@
 [project]
 name = "anyrouter-check-in"
-version = "0.2.6"
+version = "0.2.7"
 description = "Anyrouter or newapi system check in"
 requires-python = ">=3.11"
 dependencies = [
@@ -25,7 +25,7 @@ dev = [
 
 [tool.ruff]
 line-length = 120
-fix = true
+fix = false
 
 [tool.ruff.lint]
 select = ["ASYNC", "E", "F", "FAST", "I", "PLE"]

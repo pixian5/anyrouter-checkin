@@ -9,6 +9,7 @@ from checkin import (
 	generate_balance_hash,
 	get_account_state_key,
 	get_skipped_account_detail,
+	legacy_account_state_matches,
 	mark_checked_in_today,
 	prepare_cookies,
 	should_send_notification,
@@ -43,6 +44,10 @@ def test_balance_hash_is_stable_for_equivalent_balances():
 	assert generate_balance_hash(left) == generate_balance_hash(right)
 
 
+def test_balance_hash_treats_integer_and_float_quotas_as_equal():
+	assert generate_balance_hash({'account': {'quota': 100}}) == generate_balance_hash({'account': {'quota': 100.0}})
+
+
 def test_notification_is_skipped_when_all_accounts_are_unchanged():
 	assert not should_send_notification(balance_changed=False, has_failures=False)
 
@@ -62,6 +67,24 @@ def test_first_snapshot_without_a_balance_change_does_not_notify():
 def test_account_state_key_is_stable_when_account_order_changes():
 	account = AccountConfig(cookies={'session': 'token'}, api_user='123', provider='anyrouter', name='primary')
 	assert get_account_state_key(account) == 'anyrouter:123'
+
+
+def test_account_state_key_prefers_name_over_rotating_cookies():
+	first = AccountConfig(cookies={'session': 'first'}, provider='anyrouter', name='primary')
+	second = AccountConfig(cookies={'session': 'second'}, provider='anyrouter', name='primary')
+	assert get_account_state_key(first) == get_account_state_key(second) == 'anyrouter:primary'
+
+
+def test_legacy_account_state_requires_matching_identity():
+	today = checkin.datetime.now().strftime('%Y-%m-%d')
+	state = {
+		'date': today,
+		'accounts_checked': {'account_1': True},
+		'details': {'account_1': {'name': 'first', 'provider': 'anyrouter'}},
+	}
+
+	assert legacy_account_state_matches(state, 'account_1', 'first', 'anyrouter')
+	assert not legacy_account_state_matches(state, 'account_1', 'second', 'anyrouter')
 
 
 def test_mark_checked_in_resets_stale_account_flags_from_previous_day(tmp_path, monkeypatch):
