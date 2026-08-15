@@ -621,11 +621,13 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 		check_in_reward = detail.get('check_in_reward') or 0
 		usage_increase = detail.get('usage_increase') or 0
 		balance_change = detail.get('balance_change') or 0
+		baseline_balance_change = detail.get('baseline_balance_change') or 0
 
 		has_reward = check_in_reward != 0
 		has_usage = usage_increase != 0
+		has_baseline_change = baseline_balance_change != 0
 
-		if has_reward or has_usage:
+		if has_reward or has_usage or has_baseline_change:
 			lines.append('  ━━━━━━━━━━━━━━━━━━━━')
 
 			if not has_reward and has_usage:
@@ -640,6 +642,9 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 			if balance_change != 0:
 				change_symbol = '+' if balance_change > 0 else ''
 				lines.append(f'  💹 余额变化: {change_symbol}${balance_change:.2f}')
+			elif has_baseline_change:
+				change_symbol = '+' if baseline_balance_change > 0 else ''
+				lines.append(f'  📈 相比上次记录余额变化: {change_symbol}${baseline_balance_change:.2f}')
 		else:
 			lines.extend(['  ━━━━━━━━━━━━━━━━━━━━', '  ℹ️ 今日已签到，无变化'])
 
@@ -958,6 +963,16 @@ async def main():
 			notification_content.append(f'[FAIL] {account_name} exception: {str(e)[:50]}...')
 
 	balances_complete = len(current_balances) == total_count
+	if last_balance_snapshot:
+		for account_key, current_balance in current_balances.items():
+			previous_balance = last_balance_snapshot.get(account_key)
+			snapshot_detail = account_check_in_details.get(account_key)
+			if not isinstance(snapshot_detail, dict) or not isinstance(previous_balance, dict):
+				continue
+			current_quota = current_balance.get('quota')
+			previous_quota = previous_balance.get('quota')
+			if isinstance(current_quota, (int, float)) and isinstance(previous_quota, (int, float)):
+				snapshot_detail['baseline_balance_change'] = current_quota - previous_quota
 	# A new deployment has no prior snapshot.  Do not treat creating that baseline
 	# as a balance change, but preserve notifications for an actual change observed
 	# between the before/after requests in this run.

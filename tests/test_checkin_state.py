@@ -9,6 +9,7 @@ import checkin
 from checkin import (
 	CheckInOutcome,
 	execute_check_in,
+	format_check_in_notification,
 	generate_balance_hash,
 	get_account_state_key,
 	get_skipped_account_detail,
@@ -107,6 +108,26 @@ def test_execute_check_in_does_not_accept_ambiguous_code_zero():
 	outcome = execute_check_in(client, 'account', provider, {})
 
 	assert outcome.status == 'failed'
+
+
+def test_notification_shows_balance_change_from_previous_snapshot():
+	content = format_check_in_notification(
+		{
+			'name': '85976',
+			'success': True,
+			'before_quota': 6951.3,
+			'before_used': 48.7,
+			'after_quota': 6951.3,
+			'after_used': 48.7,
+			'check_in_reward': 0,
+			'usage_increase': 0,
+			'balance_change': 0,
+			'baseline_balance_change': 25,
+		},
+	)
+
+	assert '相比上次记录余额变化: +$25.00' in content
+	assert '今日已签到，无变化' not in content
 
 
 def test_account_state_key_is_stable_when_account_order_changes():
