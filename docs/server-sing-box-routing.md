@@ -8,7 +8,7 @@
 - systemd 服务：`anyrouter-vmess-client.service`
 - TUN 接口：`singbox0`
 - 路由规则：`domain_suffix: [anyrouter.top]`
-- 路由出站：当前固定 `jp7`。`urltest` 组保留用于维护时探测节点，但不用于同一次签到，以避免 WAF cookies 因出口切换失效。
+- 路由出站：当前固定 `jp1`。`urltest` 组保留用于维护时探测节点，但不用于同一次签到，以避免 WAF cookies 因出口切换失效。
 - 节点配置：只保存在服务器配置中，不提交仓库
 
 该服务不修改现有 `bz.service` 和 `xbz.service` 的服务端配置。配置变更前的备份保存在服务器 `/etc/bz/anyrouter-client.json.before-*`。
