@@ -8,7 +8,9 @@
 - systemd 服务：`anyrouter-vmess-client.service`
 - TUN 接口：`singbox0`
 - 路由规则：`domain_suffix: [anyrouter.top]`
-- 路由出站：当前固定 `jp1`。`urltest` 组保留用于维护时探测节点，但不用于同一次签到，以避免 WAF cookies 因出口切换失效。
+- 路由出站：`anyrouter-auto` URLTest 组，包含订阅生成的全部 `jp1`–`jp7` 节点，以 `https://anyrouter.top/` 为探测地址，容差为 `0`，选择实测延迟最低的可用节点。
+- 签到前预选：`anyrouter-checkin.service.d/proxy-preselect.conf` 在每次签到服务启动前重启 `anyrouter-vmess-client.service`，等待 15 秒完成全节点探测后才运行签到程序。
+- 出口稳定：URLTest 复测间隔为 30 分钟，且不打断已有连接；一次签到服务通常在 10 分钟内完成，避免获取 WAF cookies 后中途切换出口。
 - 节点配置：只保存在服务器配置中，不提交仓库
 
 该服务不修改现有 `bz.service` 和 `xbz.service` 的服务端配置。配置变更前的备份保存在服务器 `/etc/bz/anyrouter-client.json.before-*`。
@@ -23,7 +25,7 @@ curl -L https://anyrouter.top/api/user/self
 journalctl -u anyrouter-vmess-client.service -f
 ```
 
-验证日志应同时出现 `inbound/tun[global-tun]` 和目标 VMess 出站。若显示 `outbound/direct[direct]`，说明域名规则未命中；若 VMess 已命中但 TLS 或 HTTP 失败，应在维护窗口测试订阅节点并更新固定出站，不能在同一次签到中途切换节点。
+验证日志应在服务启动时出现全部 `outbound/vmess[jpN]` 对 `anyrouter.top` 的探测，并在实际请求中出现 URLTest 选中的 VMess 出站。若显示 `outbound/direct[direct]`，说明域名规则未命中；若所有节点均失败，应检查订阅或目标站状态，不能把模糊响应写成签到成功。
 
 ## 变更步骤
 
