@@ -1,6 +1,6 @@
 [project]
 name = "anyrouter-check-in"
-version = "0.3.0"
+version = "0.3.1"
 description = "Anyrouter or newapi system check in"
 requires-python = ">=3.11"
 dependencies = [

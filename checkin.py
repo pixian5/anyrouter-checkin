@@ -833,9 +833,9 @@ async def main():
 		)
 		skip_check_in = has_checked_in_today(account_key=account_key) or legacy_state_matches
 
-		# 检查该账号今日是否已成功签到（仅跳过已成功的账号，失败的账号仍需重试）
+		# 已签到账号不再发送签到请求，但做一次只读余额复核，捕获浏览器或其他客户端产生的奖励。
 		if skip_check_in:
-			print(f'[INFO] {account_name} already checked in today, skipping check-in request')
+			print(f'[INFO] {account_name} already checked in today, refreshing balance without check-in request')
 			detail = get_skipped_account_detail(
 				daily_check_in_state,
 				account_key,
@@ -843,6 +843,31 @@ async def main():
 				account_name,
 				account.provider,
 			)
+			try:
+				refresh_success, _, refresh_after = await check_in_account(account, i, app_config, skip_check_in=True)
+			except Exception as e:
+				refresh_success, refresh_after = False, None
+				print(f'[WARN] {account_name}: Read-only balance refresh failed ({str(e)[:80]})')
+
+			if refresh_success and refresh_after and refresh_after.get('success'):
+				refreshed_quota = refresh_after['quota']
+				refreshed_used = refresh_after['used_quota']
+				detail.update(
+					{
+						'before_quota': refreshed_quota,
+						'before_used': refreshed_used,
+						'after_quota': refreshed_quota,
+						'after_used': refreshed_used,
+						'check_in_reward': 0,
+						'usage_increase': 0,
+						'balance_change': 0,
+						'check_in_status': 'already_checked',
+					}
+				)
+				print(f'[INFO] {account_name}: Read-only balance refresh succeeded')
+			else:
+				print(f'[WARN] {account_name}: Read-only balance refresh unavailable; retaining saved balance')
+
 			fallback_balance = last_balance_snapshot.get(account_key)
 			if fallback_balance is None and legacy_state_matches:
 				fallback_balance = last_balance_snapshot.get(legacy_account_key)

@@ -61,10 +61,12 @@ async def test_main_skips_notification_when_all_accounts_were_checked_in(monkeyp
 	)
 	checkin.save_balance_snapshot({'anyrouter:one': {'quota': 100}, 'anyrouter:two': {'quota': 200}})
 
-	async def unexpected_check_in(*args, **kwargs):
-		raise AssertionError('checked-in accounts must not access the network')
+	async def read_only_check_in(account, *args, **kwargs):
+		assert kwargs.get('skip_check_in') is True
+		quota = 100 if account.api_user == 'one' else 200
+		return True, _user_info(quota), _user_info(quota)
 
-	monkeypatch.setattr(checkin, 'check_in_account', unexpected_check_in)
+	monkeypatch.setattr(checkin, 'check_in_account', read_only_check_in)
 
 	with pytest.raises(SystemExit) as exc_info:
 		await checkin.main()
@@ -74,6 +76,38 @@ async def test_main_skips_notification_when_all_accounts_were_checked_in(monkeyp
 	output = capsys.readouterr().out
 	assert 'Balances unchanged and no check-in failures, notification skipped' in output
 	assert 'Balance snapshot incomplete' not in output
+
+
+async def test_main_notifies_when_read_only_refresh_finds_external_balance_change(monkeypatch, tmp_path):
+	accounts = [_account('one'), _account('two')]
+	push_message = _configure_main(monkeypatch, tmp_path, accounts)
+	today = checkin.datetime.now().strftime('%Y-%m-%d')
+	checkin.save_daily_check_in_state(
+		{
+			'date': today,
+			'accounts_checked': {'anyrouter:one': True, 'anyrouter:two': True},
+			'details': {
+				'anyrouter:one': {'name': 'one', 'provider': 'anyrouter', 'success': True, 'after_quota': 100},
+				'anyrouter:two': {'name': 'two', 'provider': 'anyrouter', 'success': True, 'after_quota': 200},
+			},
+		}
+	)
+	checkin.save_balance_snapshot({'anyrouter:one': {'quota': 100}, 'anyrouter:two': {'quota': 200}})
+
+	async def read_only_check_in(account, *args, **kwargs):
+		assert kwargs.get('skip_check_in') is True
+		quota = 125 if account.api_user == 'one' else 200
+		return True, _user_info(quota), _user_info(quota)
+
+	monkeypatch.setattr(checkin, 'check_in_account', read_only_check_in)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 0
+	push_message.assert_called_once()
+	_, content = push_message.call_args.args[:2]
+	assert '相比上次记录余额变化: +$25.00' in content
 
 
 async def test_main_sends_one_notification_when_one_balance_changes(monkeypatch, tmp_path):
