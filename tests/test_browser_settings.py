@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from utils.browser import launch_login_context, load_browser_login_settings
+from utils.browser import launch_login_context, load_browser_login_settings, verify_browser_login
 
 
 def test_browser_login_settings_records_profile_persistence(monkeypatch, tmp_path):
@@ -99,3 +99,37 @@ async def test_launch_login_context_closes_browser_for_ephemeral_context(monkeyp
 	assert context.closed is True
 	assert browser.closed is True
 	assert not settings.profile_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_verify_browser_login_fetches_profile_from_authenticated_page():
+	class FakePage:
+		url = 'https://agentrouter.org/console'
+
+		def __init__(self):
+			self.fetch_path = None
+
+		def on(self, event, callback):
+			assert event == 'response'
+
+		def remove_listener(self, event, callback):
+			assert event == 'response'
+
+		async def goto(self, url, **kwargs):
+			self.url = url
+
+		async def wait_for_load_state(self, state, **kwargs):
+			assert state == 'networkidle'
+
+		async def evaluate(self, script, argument=None):
+			self.fetch_path = argument
+			return {'success': True, 'data': {'id': 123, 'username': 'hqlak47'}}
+
+	page = FakePage()
+
+	profile = await verify_browser_login(
+		cast(Any, page), 'https://agentrouter.org/console', timeout_ms=1_000, user_info_path='/api/user/self'
+	)
+
+	assert profile == {'id': 123, 'username': 'hqlak47'}
+	assert page.fetch_path == '/api/user/self'

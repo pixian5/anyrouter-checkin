@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -17,9 +19,10 @@ from checkin import (
 	mark_checked_in_today,
 	parse_check_in_response,
 	prepare_cookies,
+	run_check_in_requests,
 	should_send_notification,
 )
-from utils.config import AccountConfig, ProviderConfig
+from utils.config import AccountConfig, AppConfig, ProviderConfig
 
 
 def test_balance_hash_changes_when_quota_changes():
@@ -242,3 +245,115 @@ async def test_prepare_cookies_keeps_session_and_prefers_fresh_waf_cookies(monke
 		'acw_tc': 'fresh-waf',
 		'cdn_sec_tc': 'fresh-cdn',
 	}
+
+
+async def test_prepare_cookies_retries_until_all_required_waf_cookies_are_available(monkeypatch):
+	attempts = []
+
+	async def fake_waf_cookies(*args, **kwargs):
+		attempts.append(1)
+		if len(attempts) == 1:
+			return {'acw_tc': 'partial'}
+		return {'acw_tc': 'fresh-waf', 'acw_sc__v2': 'fresh-challenge'}
+
+	monkeypatch.setattr(checkin, 'get_waf_cookies_with_browser', fake_waf_cookies)
+	provider = ProviderConfig(
+		name='anyrouter',
+		domain='https://anyrouter.top',
+		bypass_method='waf_cookies',
+		waf_cookie_names=['acw_tc', 'acw_sc__v2'],
+	)
+
+	cookies = await prepare_cookies('account', provider, {'session': 'current-session'})
+
+	assert len(attempts) == 2
+	assert cookies == {
+		'session': 'current-session',
+		'acw_tc': 'fresh-waf',
+		'acw_sc__v2': 'fresh-challenge',
+	}
+
+
+async def test_missing_waf_cookies_abort_before_any_api_request(monkeypatch):
+	async def missing_waf_cookies(*args, **kwargs):
+		return {'acw_tc': 'partial'}
+
+	def unexpected_api_request(*args, **kwargs):
+		raise AssertionError('API requests must not run with incomplete WAF cookies')
+
+	monkeypatch.setattr(checkin, 'get_waf_cookies_with_browser', missing_waf_cookies)
+	monkeypatch.setattr(checkin, 'run_check_in_requests', unexpected_api_request)
+	provider = ProviderConfig(
+		name='anyrouter',
+		domain='https://anyrouter.top',
+		bypass_method='waf_cookies',
+		waf_cookie_names=['acw_tc', 'acw_sc__v2'],
+	)
+	account = AccountConfig(cookies={'session': 'current-session'}, provider='anyrouter', name='account')
+
+	result = await checkin.check_in_account(account, 0, AppConfig(providers={'anyrouter': provider}))
+
+	assert result == (False, None, None)
+
+
+@pytest.mark.parametrize(
+	'payload, expected_status',
+	[
+		({'success': True, 'message': '签到成功'}, 'success'),
+		({'code': 0, 'message': '今日已签到'}, 'already_checked'),
+	],
+)
+def test_explicit_check_in_outcome_survives_post_balance_query_failure(monkeypatch, payload, expected_status):
+	user_info_before = {
+		'success': True,
+		'quota': 100.0,
+		'used_quota': 0.0,
+		'display': 'quota=100',
+	}
+	user_info_after = {'success': False, 'error': 'temporary failure'}
+	monkeypatch.setattr(checkin, 'get_user_info', MagicMock(side_effect=[user_info_before, user_info_after]))
+
+	client = MagicMock()
+	response = MagicMock(status_code=200)
+	response.json.return_value = payload
+	client.post.return_value = response
+	client_context = MagicMock()
+	client_context.__enter__.return_value = client
+	monkeypatch.setattr(checkin.httpx, 'Client', MagicMock(return_value=client_context))
+	provider = ProviderConfig(name='anyrouter', domain='https://anyrouter.top')
+	account = AccountConfig(cookies={'session': 'current-session'}, provider='anyrouter')
+
+	success, before, after = run_check_in_requests({'session': 'current-session'}, account, 'account', provider)
+
+	assert success is True
+	assert before == user_info_before
+	assert after is not None
+	assert after['success'] is True
+	assert after['quota'] == 100.0
+	assert after['_check_in_status'] == expected_status
+
+
+def test_checked_cookie_account_refreshes_user_info_only_once(monkeypatch):
+	user_info = {
+		'success': True,
+		'quota': 100.0,
+		'used_quota': 0.0,
+		'display': 'quota=100',
+	}
+	get_user_info = MagicMock(return_value=user_info)
+	monkeypatch.setattr(checkin, 'get_user_info', get_user_info)
+	client_context = MagicMock()
+	client_context.__enter__.return_value = MagicMock()
+	monkeypatch.setattr(checkin.httpx, 'Client', MagicMock(return_value=client_context))
+	provider = ProviderConfig(name='anyrouter', domain='https://anyrouter.top')
+	account = AccountConfig(cookies={'session': 'current-session'}, provider='anyrouter')
+
+	success, before, after = run_check_in_requests(
+		{'session': 'current-session'}, account, 'account', provider, skip_check_in=True
+	)
+
+	assert success is True
+	assert before == user_info
+	assert after is not None
+	assert after['_check_in_status'] == 'already_checked'
+	get_user_info.assert_called_once()

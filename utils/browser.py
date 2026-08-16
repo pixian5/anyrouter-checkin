@@ -466,6 +466,30 @@ async def _parse_user_self_response(response: Any, user_info_path: str) -> dict 
 	return _extract_user_profile(payload)
 
 
+async def _fetch_user_profile_in_page(page: Page, user_info_path: str) -> dict | None:
+	"""使用已登录页面的同源会话主动读取用户资料。"""
+	try:
+		payload = await page.evaluate(
+			"""async (path) => {
+				try {
+					const response = await fetch(path, {
+						credentials: 'include',
+						headers: {Accept: 'application/json, text/plain, */*'},
+					});
+					if (!response.ok) return null;
+					return await response.json();
+				} catch (_) {
+					return null;
+				}
+			}""",
+			user_info_path,
+		)
+	except Exception as e:  # nosec B110
+		debug_print(f'[WARN] Browser-side user profile fetch failed: {e!r:.160}')
+		return None
+	return _extract_user_profile(payload)
+
+
 async def is_logged_in(page: Page, console_path: str = CONSOLE_PATH) -> bool:
 	"""快速判断：是否在控制台，或仍停留在登录页。"""
 	url = page.url.lower()
@@ -632,6 +656,11 @@ async def verify_browser_login(
 			await page.wait_for_load_state('networkidle', timeout=20_000)
 		except Exception:  # nosec B110
 			pass
+
+		if captured_profile is None:
+			captured_profile = await _fetch_user_profile_in_page(page, user_info_path)
+			if captured_profile:
+				verified.set()
 
 		if captured_profile is None:
 			try:

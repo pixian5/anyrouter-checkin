@@ -11,6 +11,16 @@ def _account(api_user: str) -> AccountConfig:
 	return AccountConfig(cookies={'session': f'session-{api_user}'}, api_user=api_user, provider='anyrouter')
 
 
+def _email_account(name: str) -> AccountConfig:
+	return AccountConfig(
+		cookies=None,
+		provider='agentrouter',
+		name=name,
+		email=f'{name}@example.com',
+		password='secret',
+	)
+
+
 def _user_info(quota: float, used: float = 0) -> dict:
 	return {
 		'success': True,
@@ -108,6 +118,49 @@ async def test_main_notifies_when_read_only_refresh_finds_external_balance_chang
 	push_message.assert_called_once()
 	_, content = push_message.call_args.args[:2]
 	assert '相比上次记录余额变化: +$25.00' in content
+
+
+async def test_main_does_not_access_network_for_checked_email_accounts(monkeypatch, tmp_path, capsys):
+	accounts = [_email_account('one'), _email_account('two')]
+	push_message = _configure_main(monkeypatch, tmp_path, accounts)
+	today = checkin.datetime.now().strftime('%Y-%m-%d')
+	account_keys = [checkin.get_account_state_key(account) for account in accounts]
+	checkin.save_daily_check_in_state(
+		{
+			'date': today,
+			'accounts_checked': {key: True for key in account_keys},
+			'details': {
+				account_keys[0]: {
+					'name': 'one',
+					'provider': 'agentrouter',
+					'success': True,
+					'after_quota': 475,
+					'after_used': 0,
+				},
+				account_keys[1]: {
+					'name': 'two',
+					'provider': 'agentrouter',
+					'success': True,
+					'after_quota': 475,
+					'after_used': 0,
+				},
+			},
+		}
+	)
+	checkin.save_balance_snapshot({key: {'quota': 475} for key in account_keys})
+
+	async def unexpected_check_in(*args, **kwargs):
+		raise AssertionError('checked email accounts must not start browser login or access the network')
+
+	monkeypatch.setattr(checkin, 'check_in_account', unexpected_check_in)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 0
+	push_message.assert_not_called()
+	output = capsys.readouterr().out
+	assert output.count('browser login skipped, retaining saved balance') == 2
 
 
 async def test_main_sends_one_notification_when_one_balance_changes(monkeypatch, tmp_path):

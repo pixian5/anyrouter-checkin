@@ -41,6 +41,7 @@ load_dotenv()
 
 BALANCE_HASH_FILE = 'balance_hash.txt'
 DAILY_CHECK_IN_STATE_FILE = 'daily_checkin_state.json'
+WAF_COOKIE_FETCH_ATTEMPTS = 2
 
 
 @dataclass(frozen=True)
@@ -478,16 +479,19 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 
 	if provider_config.needs_waf_cookies():
 		login_url = f'{provider_config.domain}{provider_config.login_path}'
-		waf_cookies = await get_waf_cookies_with_browser(
-			account_name,
-			login_url,
-			provider_config.waf_cookie_names,
-		)
+		required_cookies = provider_config.waf_cookie_names or []
+		for attempt in range(1, WAF_COOKIE_FETCH_ATTEMPTS + 1):
+			fetched_cookies = await get_waf_cookies_with_browser(account_name, login_url, required_cookies)
+			if fetched_cookies and all(fetched_cookies.get(name) for name in required_cookies):
+				waf_cookies = fetched_cookies
+				break
+			missing_cookies = [name for name in required_cookies if not (fetched_cookies or {}).get(name)]
+			print(
+				f'[WARN] {account_name}: WAF cookie acquisition attempt '
+				f'{attempt}/{WAF_COOKIE_FETCH_ATTEMPTS} incomplete; missing {missing_cookies}'
+			)
 		if not waf_cookies:
-			if user_cookies:
-				print(f'[WARN] {account_name}: WAF cookies unavailable, falling back to user cookies only')
-				return user_cookies
-			print(f'[FAILED] {account_name}: Unable to get WAF cookies and no user cookies provided')
+			print(f'[FAILED] {account_name}: Required WAF cookies unavailable; API requests aborted')
 			return None
 	else:
 		print(f'[INFO] {account_name}: Bypass WAF not required, using user cookies directly')
@@ -762,19 +766,21 @@ def run_check_in_requests(
 				check_in_outcome = execute_check_in(client, account_name, provider_config, headers)
 				user_info_after = get_user_info(client, headers, user_info_url)
 				if check_in_outcome.handled and not (user_info_after and user_info_after.get('success')):
-					print(f'[FAILED] {account_name}: Check-in succeeded but post-check-in balance query failed')
-					return False, user_info_before, _annotate_check_in_status(user_info_after, 'failed')
+					print(f'[WARN] {account_name}: Check-in confirmed but post-check-in balance query failed')
+					balance_fallback = (
+						user_info_before if user_info_before and user_info_before.get('success') else user_info_after
+					)
+					return True, user_info_before, _annotate_check_in_status(balance_fallback, check_in_outcome.status)
 				return (
 					check_in_outcome.handled,
 					user_info_before,
 					_annotate_check_in_status(user_info_after, check_in_outcome.status),
 				)
 			if skip_check_in:
-				user_info_after = get_user_info(client, headers, user_info_url)
 				return (
-					bool(user_info_after and user_info_after.get('success')),
+					bool(user_info_before and user_info_before.get('success')),
 					user_info_before,
-					_annotate_check_in_status(user_info_after, 'already_checked'),
+					_annotate_check_in_status(user_info_before, 'already_checked'),
 				)
 
 			user_info_after = get_user_info(client, headers, user_info_url)
@@ -833,9 +839,8 @@ async def main():
 		)
 		skip_check_in = has_checked_in_today(account_key=account_key) or legacy_state_matches
 
-		# 已签到账号不再发送签到请求，但做一次只读余额复核，捕获浏览器或其他客户端产生的奖励。
+		# Cookie 账号做只读余额复核，捕获浏览器或其他客户端产生的奖励；邮箱账号避免重复浏览器登录。
 		if skip_check_in:
-			print(f'[INFO] {account_name} already checked in today, refreshing balance without check-in request')
 			detail = get_skipped_account_detail(
 				daily_check_in_state,
 				account_key,
@@ -843,11 +848,18 @@ async def main():
 				account_name,
 				account.provider,
 			)
-			try:
-				refresh_success, _, refresh_after = await check_in_account(account, i, app_config, skip_check_in=True)
-			except Exception as e:
-				refresh_success, refresh_after = False, None
-				print(f'[WARN] {account_name}: Read-only balance refresh failed ({str(e)[:80]})')
+			refresh_success = False
+			refresh_after = None
+			if account.has_login_credentials():
+				print(f'[INFO] {account_name} already checked in today; browser login skipped, retaining saved balance')
+			else:
+				print(f'[INFO] {account_name} already checked in today, refreshing balance without check-in request')
+				try:
+					refresh_success, _, refresh_after = await check_in_account(
+						account, i, app_config, skip_check_in=True
+					)
+				except Exception as e:
+					print(f'[WARN] {account_name}: Read-only balance refresh failed ({str(e)[:80]})')
 
 			if refresh_success and refresh_after and refresh_after.get('success'):
 				refreshed_quota = refresh_after['quota']
@@ -865,7 +877,7 @@ async def main():
 					}
 				)
 				print(f'[INFO] {account_name}: Read-only balance refresh succeeded')
-			else:
+			elif not account.has_login_credentials():
 				print(f'[WARN] {account_name}: Read-only balance refresh unavailable; retaining saved balance')
 
 			fallback_balance = last_balance_snapshot.get(account_key)
