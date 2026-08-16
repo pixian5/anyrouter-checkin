@@ -95,6 +95,7 @@ FORM_ACTION_TIMEOUT_MS = 15_000
 EMAIL_TAB_TIMEOUT_MS = 8_000
 WAF_READY_TIMEOUT_MS = 30_000
 SESSION_WAIT_TIMEOUT_MS = 45_000
+PROFILE_VERIFY_POLL_INTERVAL_SECONDS = 2.0
 
 _VISIBLE_CHECK_JS = """
 	const isVisible = (el) => {
@@ -657,16 +658,21 @@ async def verify_browser_login(
 		except Exception:  # nosec B110
 			pass
 
-		if captured_profile is None:
-			captured_profile = await _fetch_user_profile_in_page(page, user_info_path)
-			if captured_profile:
+		verify_deadline = time.monotonic() + verify_timeout / 1000
+		while captured_profile is None:
+			fetched_profile = await _fetch_user_profile_in_page(page, user_info_path)
+			if captured_profile is None and fetched_profile:
+				captured_profile = fetched_profile
 				verified.set()
+				break
 
-		if captured_profile is None:
+			remaining = verify_deadline - time.monotonic()
+			if remaining <= 0:
+				break
 			try:
-				await asyncio.wait_for(verified.wait(), timeout=verify_timeout / 1000)
+				await asyncio.wait_for(verified.wait(), timeout=min(PROFILE_VERIFY_POLL_INTERVAL_SECONDS, remaining))
 			except TimeoutError:
-				pass
+				continue
 	finally:
 		page.remove_listener('response', on_response)
 
