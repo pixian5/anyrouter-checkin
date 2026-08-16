@@ -8,6 +8,9 @@ import httpx
 
 class NotificationKit:
 	def __init__(self):
+		self.reload_from_env()
+
+	def reload_from_env(self):
 		self.email_user: str = os.getenv('EMAIL_USER', '')
 		self.email_pass: str = os.getenv('EMAIL_PASS', '')
 		self.email_to: str = os.getenv('EMAIL_TO', '')
@@ -57,6 +60,7 @@ class NotificationKit:
 		return response
 
 	def send_email(self, title: str, content: str, msg_type: Literal['text', 'html'] = 'text'):
+		self.reload_from_env()
 		if not self.email_user or not self.email_pass or not self.email_to:
 			raise ValueError('Email configuration not set')
 
@@ -76,6 +80,7 @@ class NotificationKit:
 			server.send_message(msg)
 
 	def send_pushplus(self, title: str, content: str):
+		self.reload_from_env()
 		if not self.pushplus_token:
 			raise ValueError('PushPlus Token not configured')
 
@@ -83,6 +88,7 @@ class NotificationKit:
 		self._post_json('PushPlus', 'http://www.pushplus.plus/send', data)
 
 	def send_serverPush(self, title: str, content: str):
+		self.reload_from_env()
 		if not self.server_push_key:
 			raise ValueError('Server Push key not configured')
 
@@ -90,6 +96,7 @@ class NotificationKit:
 		self._post_json('Server Push', f'https://sctapi.ftqq.com/{self.server_push_key}.send', data)
 
 	def send_dingtalk(self, title: str, content: str):
+		self.reload_from_env()
 		if not self.dingding_webhook:
 			raise ValueError('DingTalk Webhook not configured')
 
@@ -97,6 +104,7 @@ class NotificationKit:
 		self._post_json('DingTalk', self.dingding_webhook, data)
 
 	def send_feishu(self, title: str, content: str):
+		self.reload_from_env()
 		if not self.feishu_webhook:
 			raise ValueError('Feishu Webhook not configured')
 
@@ -110,6 +118,7 @@ class NotificationKit:
 		self._post_json('Feishu', self.feishu_webhook, data)
 
 	def send_wecom(self, title: str, content: str):
+		self.reload_from_env()
 		if not self.weixin_webhook:
 			raise ValueError('WeChat Work Webhook not configured')
 
@@ -117,6 +126,7 @@ class NotificationKit:
 		self._post_json('WeChat Work', self.weixin_webhook, data)
 
 	def send_gotify(self, title: str, content: str):
+		self.reload_from_env()
 		if not self.gotify_url or not self.gotify_token:
 			raise ValueError('Gotify URL or Token not configured')
 
@@ -132,6 +142,7 @@ class NotificationKit:
 		self._post_json('Gotify', url, data)
 
 	def send_telegram(self, title: str, content: str):
+		self.reload_from_env()
 		if not self.telegram_bot_token or not self.telegram_chat_id:
 			raise ValueError('Telegram Bot Token or Chat ID not configured')
 
@@ -141,6 +152,7 @@ class NotificationKit:
 		self._post_json('Telegram', url, data)
 
 	def send_bark(self, title: str, content: str):
+		self.reload_from_env()
 		if not self.bark_key:
 			raise ValueError('Bark Key not configured')
 
@@ -151,8 +163,8 @@ class NotificationKit:
 			'device_key': self.bark_key,
 			'title': title,
 			'body': content,
-			'icon': 'https://anyrouter.top/favicon.ico',  # 可选：尝试使用 AnyRouter 图标
-			'group': 'AnyRouter',
+			'icon': 'https://anyrouter.top/favicon.ico',
+			'group': '签到通知',
 		}
 
 		self._post_json('Bark', url, data)

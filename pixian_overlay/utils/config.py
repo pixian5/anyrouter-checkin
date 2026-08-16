@@ -16,12 +16,12 @@ class ProviderConfig:
 	name: str
 	domain: str
 	login_path: str = '/login'
+	console_path: str = '/console'
 	sign_in_path: str | None = '/api/user/sign_in'
 	user_info_path: str = '/api/user/self'
 	api_user_key: str = 'new-api-user'
 	bypass_method: Literal['waf_cookies'] | None = None
 	waf_cookie_names: List[str] | None = None
-	use_proxy: bool = False
 	persist_profile: bool = False
 
 	def __post_init__(self):
@@ -46,20 +46,23 @@ class ProviderConfig:
 
 		配置格式:
 		- 基础: {"domain": "https://example.com"}
-		- 完整: {"domain": "https://example.com", "login_path": "/login", "use_proxy": true, ...}
+		- 完整: {"domain": "https://example.com", "login_path": "/login", ...}
 		"""
-		default_use_proxy = defaults.use_proxy if defaults else False
 		default_persist_profile = defaults.persist_profile if defaults else False
+		default_domain = defaults.domain if defaults else None
+		domain = data.get('domain') or default_domain
+		if not isinstance(domain, str) or not domain:
+			raise ValueError('domain is required for a new provider')
 		return cls(
 			name=name,
-			domain=data['domain'],
+			domain=domain,
 			login_path=data.get('login_path', defaults.login_path if defaults else '/login'),
+			console_path=data.get('console_path', defaults.console_path if defaults else '/console'),
 			sign_in_path=data.get('sign_in_path', defaults.sign_in_path if defaults else '/api/user/sign_in'),
 			user_info_path=data.get('user_info_path', defaults.user_info_path if defaults else '/api/user/self'),
 			api_user_key=data.get('api_user_key', defaults.api_user_key if defaults else 'new-api-user'),
 			bypass_method=data.get('bypass_method', defaults.bypass_method if defaults else None),
 			waf_cookie_names=data.get('waf_cookie_names', defaults.waf_cookie_names if defaults else None),
-			use_proxy=data.get('use_proxy', default_use_proxy),
 			persist_profile=data.get('persist_profile', default_persist_profile),
 		)
 
@@ -91,7 +94,6 @@ class AppConfig:
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',
 				waf_cookie_names=['acw_tc', 'cdn_sec_tc', 'acw_sc__v2'],
-				use_proxy=False,
 				persist_profile=True,
 			),
 			'agentrouter': ProviderConfig(
@@ -103,7 +105,6 @@ class AppConfig:
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',
 				waf_cookie_names=['acw_tc'],
-				use_proxy=True,
 				persist_profile=False,
 			),
 		}
@@ -160,13 +161,13 @@ class AccountConfig:
 	def from_dict(cls, data: dict, index: int) -> 'AccountConfig':
 		"""从字典创建 AccountConfig"""
 		provider = data.get('provider', 'anyrouter')
-		name = data.get('name', f'Account {index + 1}')
+		name = data.get('name')  # No default - let get_display_name fall through to email/api_user
 
 		return cls(
 			cookies=data.get('cookies'),
 			api_user=data.get('api_user'),
 			provider=provider,
-			name=name if name else None,
+			name=name,
 			email=data.get('email'),
 			password=data.get('password'),
 		)
@@ -176,8 +177,14 @@ class AccountConfig:
 		return bool(self.email and self.password)
 
 	def get_display_name(self, index: int) -> str:
-		"""获取显示名称"""
-		return self.name if self.name else f'Account {index + 1}'
+		"""获取显示名称，优先显示name，其次邮箱，其次API用户ID"""
+		if self.name:
+			return self.name
+		if self.email:
+			return self.email
+		if self.api_user:
+			return self.api_user
+		return f'Account {index + 1}'
 
 
 def load_accounts_config() -> list[AccountConfig] | None:

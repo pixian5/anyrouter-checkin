@@ -37,7 +37,15 @@ jobs:
               --exclude 'checkin_screenshots/' \
               --exclude '*.bak.*'
             "$deploy_path/.venv/bin/python3" -m py_compile "$deploy_path/checkin.py"
+            "$deploy_path/.venv/bin/python3" -m compileall -q "$deploy_path/pixian_overlay"
+            cd "$deploy_path"
+            "$deploy_path/.venv/bin/python3" -c \
+              "from pixian_overlay import app; from pixian_overlay.actual_checkin import install; install(app); assert app.run_check_in_requests._pixian_actual_checkin_overlay is True"
             /usr/local/bin/bz check -c /etc/bz/anyrouter-client.json
+            install -d -m 0755 /etc/systemd/system/anyrouter-checkin.service.d
+            install -m 0644 \
+              "$deploy_path/deploy/systemd/anyrouter-checkin-overlay.conf" \
+              /etc/systemd/system/anyrouter-checkin.service.d/overlay.conf
             systemctl daemon-reload
             systemctl restart anyrouter-vmess-client.service
             systemctl is-active --quiet anyrouter-vmess-client.service

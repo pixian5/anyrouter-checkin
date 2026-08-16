@@ -3,8 +3,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import checkin
-from utils.config import AccountConfig, AppConfig
+from pixian_overlay import app as checkin
+from pixian_overlay.utils.config import AccountConfig, AppConfig
 
 
 def _account(api_user: str) -> AccountConfig:

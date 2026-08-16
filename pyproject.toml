@@ -1,6 +1,6 @@
 [project]
 name = "anyrouter-check-in"
-version = "0.3.3"
+version = "0.3.4"
 description = "Anyrouter or newapi system check in"
 requires-python = ">=3.11"
 dependencies = [
@@ -39,6 +39,11 @@ docstring-code-format = true
 
 [tool.mypy]
 python_version = "3.11"
+exclude = [
+  "^checkin\\.py$",
+  "^utils/",
+  "^tests/test_(browser_settings|checkin_state|notify|provider_config)\\.py$"
+]
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
