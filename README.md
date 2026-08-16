@@ -1,5 +1,7 @@
 # Any Router 多账号自动签到
 
+[![GitHub Actions](https://github.com/millylee/anyrouter-check-in/workflows/PR%20Quality%20Checks/badge.svg)](https://github.com/millylee/anyrouter-check-in/actions)
+[![codecov](https://codecov.io/gh/millylee/anyrouter-check-in/branch/main/graph/badge.svg)](https://codecov.io/gh/millylee/anyrouter-check-in)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/millylee/anyrouter-check-in/main.svg)](https://results.pre-commit.ci/latest/github/millylee/anyrouter-check-in/main)
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
@@ -46,7 +48,17 @@
 
 按照下方图片教程操作获得。
 
-### 3. 多账号配置格式
+### 3. 设置 GitHub Environment Secret
+
+1. 在你 fork 的仓库中，点击 "Settings" 选项卡
+2. 在左侧菜单中找到 "Environments" -> "New environment"
+3. 新建一个名为 `production` 的环境
+4. 点击新建的 `production` 环境进入环境配置页
+5. 点击 "Add environment secret" 创建 secret：
+   - Name: `ANYROUTER_ACCOUNTS`
+   - Value: 你的多账号配置数据
+
+### 4. 多账号配置格式
 
 支持单个与多个账号配置，可选 `name` 和 `provider` 字段：
 
@@ -90,15 +102,35 @@
 
 ![获取 api_user](./assets/request-api-user.png)
 
+### 5. 启用 GitHub Actions
+
+1. 在你的仓库中，点击 "Actions" 选项卡
+2. 如果提示启用 Actions，请点击启用
+3. 找到 "AnyRouter 自动签到" workflow
+4. 点击 "Enable workflow"
+
+### 6. 测试运行
+
+你可以手动触发一次签到来测试：
+
+1. 在 "Actions" 选项卡中，点击 "AnyRouter 自动签到"
+2. 点击 "Run workflow" 按钮
+3. 确认运行
+
+![运行结果](./assets/check-in.png)
+
+## 执行时间
+
+- 脚本每 6 小时执行一次（1. action 无法准确触发，基本延时 1~1.5h；2. 目前观测到 anyrouter 的签到是每 24h 而不是零点就可签到）
+- 你也可以随时手动触发签到
+
 ## 注意事项
 
 - 请确保每个账号的 cookies 和 API User 都是正确的
-- 可以在本地或 sf 服务器日志中查看详细结果；本仓库已禁用 GitHub Actions
+- 可以在 Actions 页面查看详细的运行日志
 - 支持部分账号失败，只要有账号成功签到，整个任务就不会失败
 - 报 401 错误，请重新获取 cookies，理论 1 个月失效，但有 Bug，详见 [#6](https://github.com/millylee/anyrouter-check-in/issues/6)
 - 请求 200，但出现 Error 1040（08004）：Too many connections，官方数据库问题，目前已修复，但遇到几次了，详见 [#7](https://github.com/millylee/anyrouter-check-in/issues/7)
-- 部分第三方 `new-api` 站点的签到接口不是默认的 `/api/user/sign_in`，而是 `/api/user/checkin`，需要在 `PROVIDERS` 中为对应 provider 显式配置 `sign_in_path`
-- 如果某个站点的用户信息接口返回 401，而其他同类站点正常，通常是该站点的 `session` 已失效，需要重新抓取 cookies 后更新运行环境 secret
 
 ## 配置示例
 
@@ -173,7 +205,6 @@
   "customrouter": {
     "domain": "https://custom.example.com",
     "login_path": "/auth/login",
-    "console_path": "/console",
     "sign_in_path": "/api/checkin",
     "user_info_path": "/api/profile",
     "api_user_key": "New-Api-User",
@@ -190,15 +221,17 @@
 
 > 注：`anyrouter` 和 `agentrouter` 已内置默认配置，无需在 `PROVIDERS` 中配置
 
-### 在运行环境中配置
+### 在 GitHub Actions 中配置
 
-将 `PROVIDERS` 写入运行环境的 `.env` 或 secret 管理器。不要把账号、密码、cookies 或 token 提交到仓库。
+1. 进入你的仓库 Settings -> Environments -> production
+2. 添加新的 secret：
+   - Name: `PROVIDERS`
+   - Value: 你的 provider 配置（JSON 格式）
 
 **字段说明**：
 
 - `domain` (必需)：服务商的域名
 - `login_path` (可选)：登录页面路径，默认为 `/login`（仅在 `bypass_method` 为 `"waf_cookies"` 时使用）
-- `console_path` (可选)：登录验证页面路径，默认为 `/console`
 - `sign_in_path` (可选)：签到 API 路径，默认为 `/api/user/sign_in`
 - `user_info_path` (可选)：用户信息 API 路径，默认为 `/api/user/self`
 - `api_user_key` (可选)：API 用户标识请求头名称，默认为 `new-api-user`
@@ -230,11 +263,29 @@
 - `agentrouter`：
   - `bypass_method: "waf_cookies"`（需要获取 `acw_tc`）
   - `sign_in_path: null`（查询用户信息时自动签到）
+  - `use_proxy: true`
 
 **重要提示**：
 
 - `PROVIDERS` 是可选的，不配置则使用内置的 `anyrouter` 和 `agentrouter`
 - 自定义的 provider 配置会覆盖同名的默认配置
+
+## 代理配置（可选）
+
+内置的 `agentrouter` 默认 `use_proxy: true`。如果你的运行环境访问该平台不稳定，可以在 GitHub Actions 中配置 mihomo 订阅代理。
+
+在仓库 Settings -> Environments -> production -> Environment secrets 中添加：
+
+- `PROXY_SUBSCRIPTION_URL`：Clash/Mihomo 订阅链接。设置后，workflow 会运行 `scripts/setup_mihomo_proxy.sh`，启动本地代理并写入 `CHECKIN_PROXY_URL`。
+
+本地运行时也可以直接使用已有代理：
+
+```bash
+CHECKIN_PROXY_URL=http://127.0.0.1:7890
+PROVIDERS={"agentrouter":{"use_proxy":true}}
+```
+
+如果使用订阅脚本，默认会用 `https://www.google.com/generate_204` 测试代理连通性；也可以通过 `PROXY_TEST_URL` 覆盖。
 
 ## 开启通知
 
@@ -286,7 +337,7 @@
 
 配置步骤：
 
-1. 在运行环境的 secret 管理器中添加上述环境变量
+1. 在仓库的 Settings -> Environments -> production -> Environment secrets 中添加上述环境变量
 2. 每个通知方式都是独立的，可以只配置你需要的推送方式
 3. 如果某个通知方式配置不正确或未配置，脚本会自动跳过该通知方式
 
@@ -298,7 +349,7 @@
 2. cookies 是否过期
 3. API User 是否正确
 4. 网站是否更改了签到接口
-5. 在 sf 服务器使用 `journalctl -u anyrouter-checkin.service` 查看详细错误信息
+5. 查看 Actions 运行日志获取详细错误信息
 
 ## 本地开发环境设置
 
@@ -316,16 +367,12 @@ uv run python -m cloakbrowser install
 # 示例：
 # ANYROUTER_ACCOUNTS=[{"name":"账号1","email":"your@email.com","password":"your_password"}]
 # PROVIDERS={"agentrouter":{"domain":"https://agentrouter.org"}}
+# PROXY_SUBSCRIPTION_URL=https://example.com/sub?token=xxx
+# CHECKIN_PROXY_URL=http://127.0.0.1:7890
 
 # 运行签到脚本
 uv run checkin.py
 ```
-
-运行时默认使用无头浏览器。如需调整浏览器行为，使用项目实际读取的 `CHECKIN_HEADLESS`、`CHECKIN_BROWSER_PROFILE_DIR` 和 `CHECKIN_WAIT_TIMEOUT_MS` 环境变量。
-
-GitHub 仓库已关闭全部 Actions。只有 `sf.sbbz.tech` 通过 systemd timer 调用 `python -m pixian_overlay.runner` 签到，账号与通知凭据只保存在服务器 `.env`。
-
-程序不读取代理地址，也不启动或选择代理节点。服务器需要按域名分流时，由系统级 sing-box TUN 路由独立完成，详见 `docs/server-sing-box-routing.md`。
 
 ## 测试
 

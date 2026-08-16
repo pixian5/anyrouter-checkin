@@ -233,7 +233,16 @@ git push origin feature/your-feature-name
 
 ## 🔍 代码审查流程
 
-本仓库已禁用 GitHub Actions。提交前必须在本地运行 Ruff、MyPy、Bandit 与 Pytest；服务器部署只通过 `sf.sbbz.tech` 的 SSH 维护流程完成。
+提交 PR 后，会自动运行以下检查：
+
+1. **pre-commit.ci**: 自动修复代码风格问题
+2. **GitHub Actions**: 运行完整的质量检查
+   - Ruff Lint（代码风格）
+   - Ruff Format（代码格式）
+   - MyPy（类型检查）
+   - Bandit（安全扫描）
+   - Pytest（测试）
+3. **Codecov**: 报告测试覆盖率变化
 
 ### 审查标准
 

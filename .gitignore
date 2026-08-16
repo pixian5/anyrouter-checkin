@@ -1,7 +1,5 @@
 .claude
 .env
-.env.*
-!.env.example
 .venv
 __pycache__
 .pytest_cache
@@ -11,7 +9,6 @@ __pycache__
 coverage.xml
 htmlcov
 balance_hash.txt
-daily_checkin_state.json
 .browser_profiles
 checkin_screenshots
 

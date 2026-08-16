@@ -223,3 +223,31 @@ async def test_main_does_not_mark_ambiguous_check_in_as_checked(monkeypatch, tmp
 	assert exc_info.value.code == 1
 	assert not (tmp_path / 'daily_checkin_state.json').exists()
 	push_message.assert_called_once()
+
+
+async def test_failed_first_attempt_is_retried_and_only_confirmed_success_is_saved(monkeypatch, tmp_path):
+	account = _account('one')
+	_configure_main(monkeypatch, tmp_path, [account])
+	attempts = 0
+
+	async def retrying_check_in(*args, **kwargs):
+		nonlocal attempts
+		attempts += 1
+		if attempts == 1:
+			return False, _user_info(100), {'success': False, 'error': 'Reward not confirmed'}
+		after = _user_info(125)
+		after['_check_in_status'] = 'success'
+		return True, _user_info(100), after
+
+	monkeypatch.setattr(checkin, 'check_in_account', retrying_check_in)
+
+	with pytest.raises(SystemExit) as first_exit:
+		await checkin.main()
+	assert first_exit.value.code == 1
+	assert not checkin.has_checked_in_today(account_key='anyrouter:one')
+
+	with pytest.raises(SystemExit) as second_exit:
+		await checkin.main()
+	assert second_exit.value.code == 0
+	assert attempts == 2
+	assert checkin.has_checked_in_today(account_key='anyrouter:one')

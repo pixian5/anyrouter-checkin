@@ -115,6 +115,38 @@ def test_overlay_rejects_negative_or_zero_reward(monkeypatch):
 	assert original.call_count == 1 + actual_checkin.BALANCE_VERIFY_ATTEMPTS
 
 
+def test_overlay_rejects_manual_success_without_explicit_status(monkeypatch):
+	monkeypatch.setattr(actual_checkin.time, 'sleep', MagicMock())
+	before = _user_info(100)
+	after = _user_info(125)
+	after.pop('_check_in_status')
+	original = MagicMock(return_value=(True, before, after))
+	runner = actual_checkin.build_verified_runner(original)
+
+	result = runner({}, object(), 'account', _provider())
+
+	assert result[0] is False
+	assert original.call_count == 1
+
+
+def test_overlay_ignores_failed_delayed_balance_refresh(monkeypatch):
+	monkeypatch.setattr(actual_checkin.time, 'sleep', MagicMock())
+	before = _user_info(100)
+	original = MagicMock(
+		side_effect=[
+			(True, before, _user_info(100)),
+			(False, before, _user_info(125, status='already_checked')),
+			(False, before, _user_info(125, status='already_checked')),
+			(False, before, _user_info(125, status='already_checked')),
+		]
+	)
+	runner = actual_checkin.build_verified_runner(original)
+
+	result = runner({}, object(), 'account', _provider())
+
+	assert result[0] is False
+
+
 def test_overlay_does_not_change_automatic_provider_or_read_only_refresh(monkeypatch):
 	monkeypatch.setattr(actual_checkin.time, 'sleep', MagicMock())
 	result = (True, _user_info(100), _user_info(100))

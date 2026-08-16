@@ -4,9 +4,9 @@
 - 余额查询不完整时不更新全局基线，避免部分失败造成下次运行误报。
 - 每个账号的当日状态使用 provider 加账号身份生成的稳定键，并兼容旧版 `account_N` 状态。
 - 邮箱登录验证使用 provider 配置的 `console_path` 和 `user_info_path`。
-- GitHub 仓库已禁用并删除全部 Actions；签到和部署只在 `sf.sbbz.tech` 服务器执行。
+- GitHub 仓库已关闭 Actions 权限；上游 workflow 保持原文且不会执行。签到和部署只在明确启动服务的服务器执行。
 - 2026-08-13：签到与 AnyRouter VMess 客户端已从 `uk.sbbz.tech` 迁至 `sf.sbbz.tech`；首次创建完整余额基线不会单独触发通知。
-- 2026-08-15：移除签到程序内的代理读取、浏览器代理参数和 Mihomo 启停脚本；sf 由 sing-box TUN 按 `anyrouter.top` 域名透明接管，签到程序不参与路由。
+- 2026-08-15：移除 pixian 签到运行链路中的代理读取和浏览器代理参数；sf 由 sing-box TUN 按 `anyrouter.top` 域名透明接管，签到程序不参与路由。上游 Mihomo 脚本保持原文，但仓库 Actions 已关闭，不会被执行。
 - 2026-08-15：每日状态切换日期时会清空上一天的账号和 provider 标记，避免前一天成功标记导致新一天失败账号被误跳过。
 - 2026-08-15：sf 不再固定使用失效的 `jp4`。WAF cookies 绑定出口地址，`urltest` 在同一次签到中切换节点会使 API 请求失效，因此 `anyrouter.top` 固定路由到实测连续成功的 `jp7`；订阅仍保留全部节点供后续维护切换。
 - 2026-08-15：修复 cookies 合并顺序；保留用户 session，但同名 WAF cookies 始终使用本次浏览器获取的新值，避免旧 `acw_tc` 覆盖新值后收到 HTML 响应。
@@ -23,6 +23,9 @@
 - 2026-08-16：复核真实运行日志后修复四条签到故障链路：当天已签到的邮箱账号直接复用保存余额，避免重复启动浏览器；Cookie 账号保留一次只读余额复核并移除重复查询；AnyRouter 必需 WAF cookies 最多获取两次且必须完整，否则在 API 请求前终止；签到接口已明确返回成功或已签到时，即使随后余额查询临时失败也保留成功状态并使用签到前余额兜底。
 - 2026-08-16：邮箱登录到达控制台但未被动截获 `/api/user/self` 时，改用已登录页面同源请求主动读取资料，避免控制台已登录却被误判失败。
 - 2026-08-16：21:01 移开当日状态后用正式 systemd 服务实签，两个 AgentRouter 浏览器登录成功；AnyRouter 从 $6951.30 增至 $6976.30，实际到账 $25。由此确认 00:30 的 HTTP 200“成功”响应没有真正到账，却被旧逻辑提前写入成功状态，导致当天后续任务跳过。
-- 2026-08-16：新增 `pixian_overlay` 外挂层，不再为本问题继续修改上游签到核心。手动签到的 success 响应必须得到正向奖励证明；最多延迟只读复核三次，仍无奖励就返回失败并留给后续 timer 重试。systemd 通过独立 drop-in 启动外挂 runner。
-- 2026-08-16：按上游外挂约束将既有服务器定制主体迁入 `pixian_overlay.app` 与 `pixian_overlay.utils`，根目录 `checkin.py`、`utils/` 和上游原有测试恢复为 `upstream/main` 原版；定制测试使用独立 `test_pixian_*` 文件。
-- 2026-08-16：彻底删除部署与 PR 检查 workflow，并在 GitHub 仓库设置中关闭 Actions；后续代码仅通过手动 SSH 部署到 `sf.sbbz.tech`，签到仅由该服务器的 systemd timer 执行。
+- 2026-08-16：新增 `pixian_overlay` 外挂层。手动签到的 success 响应必须得到正向奖励证明；最多延迟只读复核三次，仍无奖励就返回失败并留给后续 timer 重试。systemd 通过独立 unit 模板启动外挂 runner。
+- 2026-08-16：按上游外挂约束将既有服务器定制主体迁入 `pixian_overlay.app` 与 `pixian_overlay.utils`，所有上游已存在文件恢复为 `upstream/main` 原文；定制测试使用独立 `test_pixian_*` 文件。
+- 2026-08-16：删除自建 GitHub 部署 workflow，并在 GitHub 仓库设置中关闭 Actions；上游自带 workflow 保留原文但无法执行。后续代码通过手动 SSH 部署，签到仅由明确安装并启用的本机 systemd timer 执行。
+- 2026-08-16：systemd 安装改为在目标服务器本机执行 `deploy/install-local-systemd.sh`。安装器按当前项目目录生成 service/timer，不再写死 sf 或 `/opt/anyrouter-checkin`；仅 clone 不运行，在哪台服务器明确启动程序或启用服务，就只在哪台服务器签到。
+- 2026-08-16：详细复核漏签防护：主动签到缺失明确内部状态时也按失败处理；延迟余额复查必须请求本身成功；首次未确认奖励不会写状态，后续 timer 可再次签到。systemd 固定 `TZ=Asia/Singapore`，避免服务器本地时区影响每日状态。
+- 2026-08-17：恢复全部上游文件原文，服务器定制统一记录到根目录 `说明.md`；新增 `scripts/verify_upstream_unchanged.sh` 在提交和部署前逐文件阻止上游漂移。

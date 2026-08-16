@@ -1,6 +1,6 @@
 # 服务器 sing-box 域名路由
 
-`sf.sbbz.tech` 复用现有 sing-box 二进制 `/usr/local/bin/bz`。系统级 TUN 透明接管服务器流量，只把 `anyrouter.top` 域名路由到订阅生成的 VMess 节点，其余流量由 `direct` 出站。签到程序不读取代理环境变量，也不负责启动、选择或连接代理。
+当前 `sf.sbbz.tech` 实例复用现有 sing-box 二进制 `/usr/local/bin/bz`。系统级 TUN 透明接管服务器流量，只把 `anyrouter.top` 域名路由到订阅生成的 VMess 节点，其余流量由 `direct` 出站。签到程序不读取代理环境变量，也不负责启动、选择或连接代理。其他服务器启动的程序或 systemd 服务不会触发 sf；需要代理时由各自服务器独立配置。
 
 ## 运行结构
 

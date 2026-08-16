@@ -42,7 +42,7 @@ def _confirmed_result(
 	if status == 'already_checked':
 		return True
 	if status != 'success':
-		return True
+		return False
 	reward = _reward_amount(before, after)
 	return reward is not None and reward > 0
 
@@ -76,14 +76,18 @@ def build_verified_runner(original: Callable[..., tuple[bool, dict | None, dict 
 		if _confirmed_result(result, provider_config, skip_check_in=skip_check_in):
 			return result
 
-		_, before, _ = result
+		_, before, after = result
+		status = after.get('_check_in_status') if after else None
+		if status != 'success':
+			return _failed_unverified_result(result, str(account_name))
+
 		refresh_kwargs = dict(kwargs)
 		refresh_kwargs['skip_check_in'] = True
 		for attempt in range(1, BALANCE_VERIFY_ATTEMPTS + 1):
 			time.sleep(BALANCE_VERIFY_INTERVAL_SECONDS)
-			_, _, refreshed_after = original(*args, **refresh_kwargs)
+			refresh_success, _, refreshed_after = original(*args, **refresh_kwargs)
 			reward = _reward_amount(before, refreshed_after)
-			if reward is not None and reward > 0:
+			if refresh_success and reward is not None and reward > 0:
 				confirmed_after = dict(refreshed_after or {})
 				confirmed_after['_check_in_status'] = 'success'
 				print(f'[SUCCESS] {account_name}: Reward confirmed by delayed balance query (attempt {attempt})')

@@ -1,0 +1,13 @@
+[Unit]
+Description=AnyRouter Check-in Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PROJECT_ROOT@
+EnvironmentFile=@PROJECT_ROOT@/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Singapore
+ExecStart=@PROJECT_ROOT@/.venv/bin/python -m pixian_overlay.runner
+TimeoutStartSec=20min
