@@ -4,7 +4,7 @@
 - 余额查询不完整时不更新全局基线，避免部分失败造成下次运行误报。
 - 每个账号的当日状态使用 provider 加账号身份生成的稳定键，并兼容旧版 `account_N` 状态。
 - 邮箱登录验证使用 provider 配置的 `console_path` 和 `user_info_path`。
-- 已删除的服务器签到任务与 GitHub 自动签到 workflow 不再作为本项目部署步骤；GitHub 保留 PR 质量检查。
+- GitHub 仓库已禁用并删除全部 Actions；签到和部署只在 `sf.sbbz.tech` 服务器执行。
 - 2026-08-13：签到与 AnyRouter VMess 客户端已从 `uk.sbbz.tech` 迁至 `sf.sbbz.tech`；首次创建完整余额基线不会单独触发通知。
 - 2026-08-15：移除签到程序内的代理读取、浏览器代理参数和 Mihomo 启停脚本；sf 由 sing-box TUN 按 `anyrouter.top` 域名透明接管，签到程序不参与路由。
 - 2026-08-15：每日状态切换日期时会清空上一天的账号和 provider 标记，避免前一天成功标记导致新一天失败账号被误跳过。
@@ -25,3 +25,4 @@
 - 2026-08-16：21:01 移开当日状态后用正式 systemd 服务实签，两个 AgentRouter 浏览器登录成功；AnyRouter 从 $6951.30 增至 $6976.30，实际到账 $25。由此确认 00:30 的 HTTP 200“成功”响应没有真正到账，却被旧逻辑提前写入成功状态，导致当天后续任务跳过。
 - 2026-08-16：新增 `pixian_overlay` 外挂层，不再为本问题继续修改上游签到核心。手动签到的 success 响应必须得到正向奖励证明；最多延迟只读复核三次，仍无奖励就返回失败并留给后续 timer 重试。systemd 通过独立 drop-in 启动外挂 runner。
 - 2026-08-16：按上游外挂约束将既有服务器定制主体迁入 `pixian_overlay.app` 与 `pixian_overlay.utils`，根目录 `checkin.py`、`utils/` 和上游原有测试恢复为 `upstream/main` 原版；定制测试使用独立 `test_pixian_*` 文件。
+- 2026-08-16：彻底删除部署与 PR 检查 workflow，并在 GitHub 仓库设置中关闭 Actions；后续代码仅通过手动 SSH 部署到 `sf.sbbz.tech`，签到仅由该服务器的 systemd timer 执行。

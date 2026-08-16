@@ -1,7 +1,5 @@
 # Any Router 多账号自动签到
 
-[![GitHub Actions](https://github.com/millylee/anyrouter-check-in/workflows/PR%20Quality%20Checks/badge.svg)](https://github.com/millylee/anyrouter-check-in/actions)
-[![codecov](https://codecov.io/gh/millylee/anyrouter-check-in/branch/main/graph/badge.svg)](https://codecov.io/gh/millylee/anyrouter-check-in)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/millylee/anyrouter-check-in/main.svg)](https://results.pre-commit.ci/latest/github/millylee/anyrouter-check-in/main)
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
@@ -95,7 +93,7 @@
 ## 注意事项
 
 - 请确保每个账号的 cookies 和 API User 都是正确的
-- 可以在本地运行日志中查看详细结果；PR 质量检查仍会在 GitHub Actions 中执行
+- 可以在本地或 sf 服务器日志中查看详细结果；本仓库已禁用 GitHub Actions
 - 支持部分账号失败，只要有账号成功签到，整个任务就不会失败
 - 报 401 错误，请重新获取 cookies，理论 1 个月失效，但有 Bug，详见 [#6](https://github.com/millylee/anyrouter-check-in/issues/6)
 - 请求 200，但出现 Error 1040（08004）：Too many connections，官方数据库问题，目前已修复，但遇到几次了，详见 [#7](https://github.com/millylee/anyrouter-check-in/issues/7)
@@ -300,7 +298,7 @@
 2. cookies 是否过期
 3. API User 是否正确
 4. 网站是否更改了签到接口
-5. 查看 Actions 运行日志获取详细错误信息
+5. 在 sf 服务器使用 `journalctl -u anyrouter-checkin.service` 查看详细错误信息
 
 ## 本地开发环境设置
 
@@ -325,7 +323,7 @@ uv run checkin.py
 
 运行时默认使用无头浏览器。如需调整浏览器行为，使用项目实际读取的 `CHECKIN_HEADLESS`、`CHECKIN_BROWSER_PROFILE_DIR` 和 `CHECKIN_WAIT_TIMEOUT_MS` 环境变量。
 
-GitHub 仓库不运行自动签到 workflow。受控服务器可通过 systemd timer 调用 `uv run checkin.py`，账号与通知凭据只保存在服务器 `.env`。
+GitHub 仓库已关闭全部 Actions。只有 `sf.sbbz.tech` 通过 systemd timer 调用 `python -m pixian_overlay.runner` 签到，账号与通知凭据只保存在服务器 `.env`。
 
 程序不读取代理地址，也不启动或选择代理节点。服务器需要按域名分流时，由系统级 sing-box TUN 路由独立完成，详见 `docs/server-sing-box-routing.md`。
 
