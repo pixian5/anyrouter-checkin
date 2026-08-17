@@ -38,3 +38,4 @@
 - 2026-08-17：外挂 runner 增加按项目路径隔离的单实例锁，避免 systemd 与手动运行并发覆盖状态；通知发送结果改为至少一个渠道成功才报告已交付，无效 Gotify 优先级自动回退为 9。
 - 2026-08-17：14:00、20:00 正式 timer 复核三账号均保持成功；AnyRouter 余额 $7001.30、累计消耗 $48.70，两个 AgentRouter 账号余额均为 $500。两轮无余额变化、无失败、未通知，20:00 服务退出码 0。
 - 2026-08-17：0.3.9 在本地 macOS Python 3.11 与 sf Ubuntu Python 3.14 的全量测试均为 112 passed、2 skipped，Ruff、MyPy、Bandit、compileall、shell 语法、pip check 和上游保护全部通过。sf 正式 unit 首次只读复核遇到一次 TLS EOF 时正确保留已签到状态并退出 0；第二次只读复核成功确认 AnyRouter 仍为 $7001.30 / $48.70，全程未重复签到、未发送无变化通知。
+- 2026-08-17：按复查需求新增 SQLite 审计库 `checkin_history.sqlite3`。每次运行的摘要和每个账号的余额、累计消耗、奖励、跳过/失败原因均以事务写入；数据库在账号请求前预检，权限限制为 0600，不记录 Cookie 或密码。新增 `scripts/show_checkin_history.py` 支持按最近次数、日期或 JSON 只读查询。

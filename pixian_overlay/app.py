@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -45,11 +46,16 @@ load_dotenv()
 
 BALANCE_HASH_FILE = 'balance_hash.txt'
 DAILY_CHECK_IN_STATE_FILE = 'daily_checkin_state.json'
+CHECKIN_HISTORY_DATABASE_FILE = 'checkin_history.sqlite3'
 WAF_COOKIE_FETCH_ATTEMPTS = 2
 
 
 class StateFileError(RuntimeError):
 	"""持久化状态不可安全读取时终止签到，避免把损坏文件当作未签到。"""
+
+
+class CheckInHistoryError(RuntimeError):
+	"""签到审计数据库不可安全写入时终止新的账号请求。"""
 
 
 def _reject_non_finite_json(value: str):
@@ -79,6 +85,157 @@ def _atomic_write_json(path: str, data: object) -> None:
 		except FileNotFoundError:
 			pass
 		raise
+
+
+def _open_checkin_history_database() -> sqlite3.Connection:
+	"""打开本项目独占的 SQLite 审计库，并确保基础表可用。"""
+	database_path = os.path.abspath(CHECKIN_HISTORY_DATABASE_FILE)
+	connection: sqlite3.Connection | None = None
+	try:
+		os.makedirs(os.path.dirname(database_path) or os.curdir, exist_ok=True)
+		connection = sqlite3.connect(database_path, timeout=30.0)
+		connection.execute('PRAGMA foreign_keys = ON')
+		connection.execute('PRAGMA busy_timeout = 30000')
+		connection.execute('PRAGMA synchronous = FULL')
+		connection.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS checkin_runs (
+				id INTEGER PRIMARY KEY,
+				run_time TEXT NOT NULL,
+				execution_status TEXT NOT NULL,
+				accounts_total INTEGER NOT NULL,
+				accounts_succeeded INTEGER NOT NULL,
+				balance_changed INTEGER NOT NULL,
+				has_failures INTEGER NOT NULL,
+				message TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)
+			"""
+		)
+		connection.execute(
+			"""
+			CREATE TABLE IF NOT EXISTS checkin_account_records (
+				id INTEGER PRIMARY KEY,
+				run_id INTEGER NOT NULL REFERENCES checkin_runs(id) ON DELETE CASCADE,
+				account_key TEXT NOT NULL,
+				name TEXT NOT NULL,
+				provider TEXT NOT NULL,
+				success INTEGER NOT NULL,
+				skipped INTEGER NOT NULL,
+				before_quota REAL,
+				before_used REAL,
+				after_quota REAL,
+				after_used REAL,
+				check_in_reward REAL,
+				usage_increase REAL,
+				balance_change REAL,
+				baseline_balance_change REAL,
+				check_in_status TEXT NOT NULL DEFAULT '',
+				error TEXT NOT NULL DEFAULT ''
+			)
+			"""
+		)
+		connection.execute('CREATE INDEX IF NOT EXISTS idx_checkin_runs_run_time ON checkin_runs(run_time DESC)')
+		connection.execute(
+			'CREATE INDEX IF NOT EXISTS idx_checkin_account_records_account ON checkin_account_records(account_key, id DESC)'
+		)
+		connection.commit()
+		os.chmod(database_path, 0o600)
+		return connection
+	except (OSError, sqlite3.Error) as e:
+		if connection is not None:
+			try:
+				connection.close()
+			except sqlite3.Error:
+				pass
+		raise CheckInHistoryError(f'Cannot initialize check-in history database: {e}') from e
+
+
+def initialize_checkin_history_database() -> None:
+	"""在任何账号请求前验证审计数据库可写。"""
+	connection = _open_checkin_history_database()
+	connection.close()
+
+
+def _history_number(detail: dict, field: str) -> float | None:
+	value = detail.get(field)
+	return float(cast(int | float, value)) if _is_finite_amount(value) else None
+
+
+def _history_text(value: object, *, limit: int = 1000) -> str:
+	return str(value or '')[:limit]
+
+
+def record_checkin_history(
+	run_time: str,
+	details: dict,
+	*,
+	accounts_total: int,
+	accounts_succeeded: int,
+	balance_changed: bool,
+	has_failures: bool,
+	execution_status: str,
+	message: str = '',
+) -> None:
+	"""以单个 SQLite 事务保存本次运行和全部账号明细，不保存 Cookie 或密码。"""
+	connection = _open_checkin_history_database()
+	try:
+		with connection:
+			cursor = connection.execute(
+				"""
+				INSERT INTO checkin_runs (
+					run_time, execution_status, accounts_total, accounts_succeeded,
+					balance_changed, has_failures, message
+				) VALUES (?, ?, ?, ?, ?, ?, ?)
+				""",
+				(
+					run_time,
+					_history_text(execution_status, limit=80),
+					accounts_total,
+					accounts_succeeded,
+					int(balance_changed),
+					int(has_failures),
+					_history_text(message),
+				),
+			)
+			run_id = cursor.lastrowid
+			if not isinstance(run_id, int):
+				raise sqlite3.DatabaseError('database did not return a run identifier')
+			for account_key, detail in sorted(details.items()):
+				if not isinstance(detail, dict):
+					continue
+				connection.execute(
+					"""
+					INSERT INTO checkin_account_records (
+						run_id, account_key, name, provider, success, skipped,
+						before_quota, before_used, after_quota, after_used,
+						check_in_reward, usage_increase, balance_change, baseline_balance_change,
+						check_in_status, error
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					""",
+					(
+						run_id,
+						_history_text(account_key, limit=255),
+						_history_text(detail.get('name'), limit=255),
+						_history_text(detail.get('provider'), limit=120),
+						int(detail.get('success') is True),
+						int(detail.get('skipped') is True),
+						_history_number(detail, 'before_quota'),
+						_history_number(detail, 'before_used'),
+						_history_number(detail, 'after_quota'),
+						_history_number(detail, 'after_used'),
+						_history_number(detail, 'check_in_reward'),
+						_history_number(detail, 'usage_increase'),
+						_history_number(detail, 'balance_change'),
+						_history_number(detail, 'baseline_balance_change'),
+						_history_text(detail.get('check_in_status'), limit=80),
+						_history_text(detail.get('error')),
+					),
+				)
+	except (OSError, sqlite3.Error, TypeError, ValueError) as e:
+		raise CheckInHistoryError(f'Cannot write check-in history database: {e}') from e
+	finally:
+		connection.close()
 
 
 @dataclass(frozen=True)
@@ -954,12 +1111,38 @@ async def main():
 
 	app_config = AppConfig.load_from_env()
 	print(f'[INFO] Loaded {len(app_config.providers)} provider configuration(s)')
-	accounts = load_accounts_config()
-	if not accounts:
-		error_msg = '[FAILED] Unable to load account configuration, program exits'
+	try:
+		initialize_checkin_history_database()
+	except CheckInHistoryError as e:
+		error_msg = f'[FAILED] Check-in history database is unavailable; no account requests were sent: {e}'
 		print(error_msg)
 		notify.push_message('Check-in Alert', error_msg, msg_type='text')
 		sys.exit(1)
+
+	def abort_before_account_requests(error_msg: str, accounts_total: int = 0) -> None:
+		"""记录配置/状态阻断后退出，确保失败尝试同样可审计。"""
+		try:
+			record_checkin_history(
+				current_time,
+				{},
+				accounts_total=accounts_total,
+				accounts_succeeded=0,
+				balance_changed=False,
+				has_failures=True,
+				execution_status='configuration_failed',
+				message=error_msg,
+			)
+		except CheckInHistoryError as history_error:
+			print(f'[FAILED] Unable to record preflight failure: {history_error}')
+		print(error_msg)
+		notify.push_message('Check-in Alert', error_msg, msg_type='text')
+		sys.exit(1)
+
+	accounts = load_accounts_config()
+	if not accounts:
+		error_msg = '[FAILED] Unable to load account configuration, program exits'
+		abort_before_account_requests(error_msg)
+		return
 
 	print(f'[INFO] Found {len(accounts)} account configurations')
 
@@ -971,24 +1154,18 @@ async def main():
 		error_msg = '[FAILED] Unknown account provider(s); no account requests were sent: ' + ', '.join(
 			unknown_providers
 		)
-		print(error_msg)
-		notify.push_message('Check-in Alert', error_msg, msg_type='text')
-		sys.exit(1)
+		abort_before_account_requests(error_msg, len(accounts))
 	duplicate_keys = sorted({key for key in account_keys if account_keys.count(key) > 1})
 	if duplicate_keys:
 		error_msg = '[FAILED] Duplicate account identities would overwrite check-in state: ' + ', '.join(duplicate_keys)
-		print(error_msg)
-		notify.push_message('Check-in Alert', error_msg, msg_type='text')
-		sys.exit(1)
+		abort_before_account_requests(error_msg, len(accounts))
 
 	try:
 		last_balance_snapshot = load_balance_snapshot()
 		daily_check_in_state = load_daily_check_in_state()
 	except StateFileError as e:
 		error_msg = f'[FAILED] State file safety check failed; no account requests were sent: {e}'
-		print(error_msg)
-		notify.push_message('Check-in Alert', error_msg, msg_type='text')
-		sys.exit(1)
+		abort_before_account_requests(error_msg, len(accounts))
 
 	success_count = 0
 	total_count = len(accounts)
@@ -1261,6 +1438,23 @@ async def main():
 		has_failures = True
 		print(f'[FAILED] {persistence_error}')
 
+	history_error = ''
+	try:
+		record_checkin_history(
+			current_time,
+			account_check_in_details,
+			accounts_total=total_count,
+			accounts_succeeded=success_count,
+			balance_changed=balance_changed,
+			has_failures=has_failures,
+			execution_status='completed' if not has_failures else 'completed_with_failures',
+			message=persistence_error,
+		)
+	except CheckInHistoryError as e:
+		history_error = f'签到审计数据库写入失败: {str(e)[:160]}'
+		has_failures = True
+		print(f'[FAILED] {history_error}')
+
 	if (
 		should_send_notification(balance_changed=balance_changed, has_failures=has_failures)
 		and account_check_in_details
@@ -1308,10 +1502,12 @@ async def main():
 			all_sections.append(section)
 		if persistence_error:
 			all_sections.append(f'❌ 本地状态持久化失败\n\n{persistence_error}')
+		if history_error:
+			all_sections.append(f'❌ 签到审计数据库写入失败\n\n{history_error}')
 
 		# 总体标题
-		if success_count == total_count and persistence_error:
-			notify_title = f'⚠️ 签到完成但状态保存失败 ({success_count}/{total_count})'
+		if success_count == total_count and (persistence_error or history_error):
+			notify_title = f'⚠️ 签到完成但本地记录失败 ({success_count}/{total_count})'
 		elif success_count == total_count:
 			notify_title = f'✅ 签到全部成功 ({success_count}/{total_count})'
 		elif success_count > 0:

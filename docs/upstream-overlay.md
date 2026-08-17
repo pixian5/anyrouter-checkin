@@ -18,6 +18,8 @@
 
 状态文件由外挂原子写入；损坏状态、非有限数值、重复账号键、未知 provider 和重叠进程都会在发送账号请求前被阻止。通知余额比较仍只使用 `quota`，快照中的 `used` 与 `evidence_*` 只服务于奖励证明，不会因累计消耗变化单独推送。
 
+外挂还维护项目目录中的 SQLite 数据库 `checkin_history.sqlite3`：每次运行的一条摘要写入 `checkin_runs`，各账号签到前后余额/消耗、奖励、跳过和错误原因写入 `checkin_account_records`。数据库写入采用单事务，且在账号请求前就验证可写；不得记录 Cookie、密码、WAF Cookie 或完整接口响应。`scripts/show_checkin_history.py` 是只读查询入口。
+
 ## 上游更新
 
 1. `git fetch upstream`，先查看 `upstream/main...main` 差异。

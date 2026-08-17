@@ -33,8 +33,10 @@ def _user_info(quota: float, used: float = 0) -> dict:
 def _configure_main(monkeypatch, tmp_path, accounts: list[AccountConfig]) -> MagicMock:
 	state_file = tmp_path / 'daily_checkin_state.json'
 	balance_file = tmp_path / 'balance_hash.txt'
+	history_file = tmp_path / 'checkin_history.sqlite3'
 	monkeypatch.setattr(checkin, 'DAILY_CHECK_IN_STATE_FILE', str(state_file))
 	monkeypatch.setattr(checkin, 'BALANCE_HASH_FILE', str(balance_file))
+	monkeypatch.setattr(checkin, 'CHECKIN_HISTORY_DATABASE_FILE', str(history_file))
 	providers = {
 		'anyrouter': ProviderConfig(name='anyrouter', domain='https://anyrouter.top'),
 		'agentrouter': ProviderConfig(name='agentrouter', domain='https://agentrouter.org', sign_in_path=None),
@@ -416,3 +418,68 @@ async def test_state_write_failure_keeps_old_balance_baseline_and_returns_failur
 	assert checkin.load_balance_snapshot() == {'anyrouter:one': {'quota': 100.0, 'used': 0.0}}
 	push_message.assert_called_once()
 	assert '状态保存失败' in push_message.call_args.args[1]
+
+
+async def test_main_records_every_account_result_in_sqlite_history(monkeypatch, tmp_path):
+	account = _account('one')
+	_configure_main(monkeypatch, tmp_path, [account])
+
+	async def successful_check_in(*args, **kwargs):
+		after = _user_info(125, 10)
+		after['_check_in_status'] = 'success'
+		return True, _user_info(100, 5), after
+
+	monkeypatch.setattr(checkin, 'check_in_account', successful_check_in)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 0
+	connection = checkin.sqlite3.connect(tmp_path / 'checkin_history.sqlite3')
+	try:
+		run = connection.execute(
+			'SELECT execution_status, accounts_total, accounts_succeeded, has_failures FROM checkin_runs'
+		).fetchone()
+		account_row = connection.execute(
+			"""SELECT account_key, name, provider, success, skipped, before_quota, before_used,
+			   after_quota, after_used, check_in_reward, usage_increase, balance_change, check_in_status
+			   FROM checkin_account_records"""
+		).fetchone()
+	finally:
+		connection.close()
+
+	assert run == ('completed', 1, 1, 0)
+	assert account_row == (
+		'anyrouter:one',
+		'one',
+		'anyrouter',
+		1,
+		0,
+		100.0,
+		5.0,
+		125.0,
+		10.0,
+		30.0,
+		5.0,
+		25.0,
+		'success',
+	)
+
+
+async def test_history_database_must_be_available_before_account_requests(monkeypatch, tmp_path):
+	account = _account('one')
+	push_message = _configure_main(monkeypatch, tmp_path, [account])
+	check_in_account = MagicMock()
+	monkeypatch.setattr(checkin, 'check_in_account', check_in_account)
+	monkeypatch.setattr(
+		checkin,
+		'initialize_checkin_history_database',
+		MagicMock(side_effect=checkin.CheckInHistoryError('database locked')),
+	)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 1
+	check_in_account.assert_not_called()
+	push_message.assert_called_once()
