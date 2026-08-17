@@ -466,6 +466,34 @@ async def test_main_records_every_account_result_in_sqlite_history(monkeypatch, 
 	)
 
 
+async def test_main_records_observed_balances_when_reward_is_unverified(monkeypatch, tmp_path):
+	account = _account('one')
+	_configure_main(monkeypatch, tmp_path, [account])
+	after = _user_info(100, 5)
+	after.update({'success': False, 'error': 'reward not confirmed', '_check_in_status': 'failed'})
+
+	async def unverified_check_in(*args, **kwargs):
+		return False, _user_info(100, 5), after
+
+	monkeypatch.setattr(checkin, 'check_in_account', unverified_check_in)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 1
+	connection = checkin.sqlite3.connect(tmp_path / 'checkin_history.sqlite3')
+	try:
+		account_row = connection.execute(
+			"""SELECT success, skipped, before_quota, before_used, after_quota, after_used,
+			   usage_increase, balance_change, check_in_status, error
+			   FROM checkin_account_records"""
+		).fetchone()
+	finally:
+		connection.close()
+
+	assert account_row == (0, 0, 100.0, 5.0, 100.0, 5.0, 0.0, 0.0, 'failed', 'reward not confirmed')
+
+
 async def test_history_database_must_be_available_before_account_requests(monkeypatch, tmp_path):
 	account = _account('one')
 	push_message = _configure_main(monkeypatch, tmp_path, [account])

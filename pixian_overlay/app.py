@@ -1338,17 +1338,49 @@ async def main():
 					}
 			else:
 				error_msg = user_info_after.get('error', 'Login failed') if user_info_after else 'Login failed'
+				before_quota = (
+					user_info_before.get('quota')
+					if user_info_before
+					and user_info_before.get('success')
+					and _is_finite_amount(user_info_before.get('quota'))
+					else None
+				)
+				before_used = (
+					user_info_before.get('used_quota')
+					if user_info_before
+					and user_info_before.get('success')
+					and _is_finite_amount(user_info_before.get('used_quota'))
+					else None
+				)
+				after_quota = (
+					user_info_after.get('quota')
+					if user_info_after and _is_finite_amount(user_info_after.get('quota'))
+					else None
+				)
+				after_used = (
+					user_info_after.get('used_quota')
+					if user_info_after and _is_finite_amount(user_info_after.get('used_quota'))
+					else None
+				)
+				balance_change = (
+					after_quota - before_quota if before_quota is not None and after_quota is not None else None
+				)
+				usage_increase = (
+					after_used - before_used if before_used is not None and after_used is not None else None
+				)
 				account_check_in_details[account_key] = {
 					'name': account_name,
 					'provider': account.provider,
-					'before_quota': None,
-					'before_used': None,
-					'after_quota': None,
-					'after_used': None,
+					'before_quota': before_quota,
+					'before_used': before_used,
+					'after_quota': after_quota,
+					'after_used': after_used,
 					'check_in_reward': None,
-					'usage_increase': None,
-					'balance_change': None,
+					'usage_increase': usage_increase,
+					'balance_change': balance_change,
 					'success': success,
+					'skipped': skip_check_in or check_in_status == 'already_checked',
+					'check_in_status': check_in_status,
 					'error': error_msg,
 				}
 
