@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pixian_overlay import app as checkin
-from pixian_overlay.utils.config import AccountConfig, AppConfig
+from pixian_overlay.utils.config import AccountConfig, AppConfig, ProviderConfig
 
 
 def _account(api_user: str) -> AccountConfig:
@@ -35,7 +35,11 @@ def _configure_main(monkeypatch, tmp_path, accounts: list[AccountConfig]) -> Mag
 	balance_file = tmp_path / 'balance_hash.txt'
 	monkeypatch.setattr(checkin, 'DAILY_CHECK_IN_STATE_FILE', str(state_file))
 	monkeypatch.setattr(checkin, 'BALANCE_HASH_FILE', str(balance_file))
-	monkeypatch.setattr(checkin.AppConfig, 'load_from_env', staticmethod(lambda: AppConfig(providers={})))
+	providers = {
+		'anyrouter': ProviderConfig(name='anyrouter', domain='https://anyrouter.top'),
+		'agentrouter': ProviderConfig(name='agentrouter', domain='https://agentrouter.org', sign_in_path=None),
+	}
+	monkeypatch.setattr(checkin.AppConfig, 'load_from_env', staticmethod(lambda: AppConfig(providers=providers)))
 	monkeypatch.setattr(checkin, 'load_accounts_config', lambda: accounts)
 	monkeypatch.setattr(checkin, 'is_debug_enabled', lambda: False)
 	push_message = MagicMock()
@@ -185,8 +189,8 @@ async def test_main_sends_one_notification_when_one_balance_changes(monkeypatch,
 	assert 'one' in content
 	assert 'two' in content
 	assert json.loads((tmp_path / 'balance_hash.txt').read_text(encoding='utf-8')) == {
-		'anyrouter:one': {'quota': 125},
-		'anyrouter:two': {'quota': 200},
+		'anyrouter:one': {'quota': 125.0, 'used': 0.0},
+		'anyrouter:two': {'quota': 200.0, 'used': 0.0},
 	}
 
 
@@ -251,3 +255,164 @@ async def test_failed_first_attempt_is_retried_and_only_confirmed_success_is_sav
 	assert second_exit.value.code == 0
 	assert attempts == 2
 	assert checkin.has_checked_in_today(account_key='anyrouter:one')
+
+
+async def test_automatic_provider_requires_reward_evidence_from_previous_snapshot(monkeypatch, tmp_path):
+	account = _email_account('one')
+	push_message = _configure_main(monkeypatch, tmp_path, [account])
+	account_key = checkin.get_account_state_key(account)
+	checkin.save_balance_snapshot({account_key: {'quota': 500, 'used': 0}})
+
+	async def unchanged_auto_check_in(*args, **kwargs):
+		after = _user_info(500, 0)
+		after['_check_in_status'] = 'success'
+		return True, _user_info(500, 0), after
+
+	monkeypatch.setattr(checkin, 'check_in_account', unchanged_auto_check_in)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 1
+	assert not checkin.has_checked_in_today(account_key=account_key)
+	push_message.assert_called_once()
+	snapshot = checkin.load_balance_snapshot()[account_key]
+	assert snapshot['quota'] == 500
+	assert snapshot['evidence_quota'] == 500
+	assert snapshot['evidence_used'] == 0
+
+
+async def test_automatic_provider_can_confirm_reward_on_later_retry(monkeypatch, tmp_path):
+	account = _email_account('one')
+	_configure_main(monkeypatch, tmp_path, [account])
+	account_key = checkin.get_account_state_key(account)
+	attempt = 0
+
+	async def delayed_auto_reward(*args, **kwargs):
+		nonlocal attempt
+		attempt += 1
+		after = _user_info(500, 0 if attempt == 1 else 25)
+		after['_check_in_status'] = 'success'
+		return True, after, after
+
+	monkeypatch.setattr(checkin, 'check_in_account', delayed_auto_reward)
+
+	with pytest.raises(SystemExit) as first_exit:
+		await checkin.main()
+	assert first_exit.value.code == 1
+	assert not checkin.has_checked_in_today(account_key=account_key)
+
+	with pytest.raises(SystemExit) as second_exit:
+		await checkin.main()
+	assert second_exit.value.code == 0
+	assert checkin.has_checked_in_today(account_key=account_key)
+
+
+async def test_automatic_provider_confirms_reward_when_consumption_offsets_quota(monkeypatch, tmp_path):
+	account = _email_account('one')
+	_configure_main(monkeypatch, tmp_path, [account])
+	account_key = checkin.get_account_state_key(account)
+	checkin.save_balance_snapshot({account_key: {'quota': 500, 'used': 0}})
+
+	async def rewarded_auto_check_in(*args, **kwargs):
+		after = _user_info(500, 25)
+		after['_check_in_status'] = 'success'
+		return True, after, after
+
+	monkeypatch.setattr(checkin, 'check_in_account', rewarded_auto_check_in)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 0
+	assert checkin.has_checked_in_today(account_key=account_key)
+
+
+async def test_automatic_provider_does_not_treat_consumption_alone_as_reward(monkeypatch, tmp_path):
+	account = _email_account('one')
+	_configure_main(monkeypatch, tmp_path, [account])
+	account_key = checkin.get_account_state_key(account)
+	checkin.save_balance_snapshot({account_key: {'quota': 500, 'used': 0}})
+
+	async def consumption_only(*args, **kwargs):
+		after = _user_info(475, 25)
+		after['_check_in_status'] = 'success'
+		return True, after, after
+
+	monkeypatch.setattr(checkin, 'check_in_account', consumption_only)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 1
+	assert not checkin.has_checked_in_today(account_key=account_key)
+	snapshot = checkin.load_balance_snapshot()[account_key]
+	assert snapshot['quota'] == 475
+	assert snapshot['used'] == 25
+	assert snapshot['evidence_quota'] == 500
+	assert snapshot['evidence_used'] == 0
+
+
+async def test_duplicate_account_state_keys_abort_before_network(monkeypatch, tmp_path):
+	accounts = [_account('same'), _account('same')]
+	push_message = _configure_main(monkeypatch, tmp_path, accounts)
+	check_in_account = MagicMock()
+	monkeypatch.setattr(checkin, 'check_in_account', check_in_account)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 1
+	check_in_account.assert_not_called()
+	push_message.assert_called_once()
+
+
+async def test_unknown_provider_aborts_all_accounts_before_network(monkeypatch, tmp_path):
+	accounts = [_account('valid'), AccountConfig(cookies={'session': 'x'}, api_user='bad', provider='missing')]
+	push_message = _configure_main(monkeypatch, tmp_path, accounts)
+	check_in_account = MagicMock()
+	monkeypatch.setattr(checkin, 'check_in_account', check_in_account)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 1
+	check_in_account.assert_not_called()
+	push_message.assert_called_once()
+
+
+async def test_corrupt_state_aborts_before_network(monkeypatch, tmp_path):
+	account = _account('one')
+	push_message = _configure_main(monkeypatch, tmp_path, [account])
+	(tmp_path / 'daily_checkin_state.json').write_text('{broken', encoding='utf-8')
+	check_in_account = MagicMock()
+	monkeypatch.setattr(checkin, 'check_in_account', check_in_account)
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 1
+	check_in_account.assert_not_called()
+	push_message.assert_called_once()
+
+
+async def test_state_write_failure_keeps_old_balance_baseline_and_returns_failure(monkeypatch, tmp_path):
+	account = _account('one')
+	push_message = _configure_main(monkeypatch, tmp_path, [account])
+	checkin.save_balance_snapshot({'anyrouter:one': {'quota': 100, 'used': 0}})
+
+	async def successful_check_in(*args, **kwargs):
+		after = _user_info(125, 0)
+		after['_check_in_status'] = 'success'
+		return True, _user_info(100, 0), after
+
+	monkeypatch.setattr(checkin, 'check_in_account', successful_check_in)
+	monkeypatch.setattr(checkin, 'save_daily_check_in_state', MagicMock(side_effect=OSError('disk full')))
+
+	with pytest.raises(SystemExit) as exc_info:
+		await checkin.main()
+
+	assert exc_info.value.code == 1
+	assert checkin.load_balance_snapshot() == {'anyrouter:one': {'quota': 100.0, 'used': 0.0}}
+	push_message.assert_called_once()
+	assert '状态保存失败' in push_message.call_args.args[1]

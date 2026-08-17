@@ -6,11 +6,14 @@ AnyRouter.top 自动签到脚本
 import asyncio
 import hashlib
 import json
+import math
 import os
+import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Literal, cast
 
 if hasattr(sys.stdout, 'reconfigure'):
 	sys.stdout.reconfigure(line_buffering=True)
@@ -20,6 +23,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 import httpx
 from dotenv import load_dotenv
 
+from pixian_overlay.actual_checkin import _reward_amount
 from pixian_overlay.utils.browser import (
 	BrowserLoginResult,
 	has_session_cookie,
@@ -42,6 +46,39 @@ load_dotenv()
 BALANCE_HASH_FILE = 'balance_hash.txt'
 DAILY_CHECK_IN_STATE_FILE = 'daily_checkin_state.json'
 WAF_COOKIE_FETCH_ATTEMPTS = 2
+
+
+class StateFileError(RuntimeError):
+	"""持久化状态不可安全读取时终止签到，避免把损坏文件当作未签到。"""
+
+
+def _reject_non_finite_json(value: str):
+	raise ValueError(f'non-finite JSON value: {value}')
+
+
+def _atomic_write_json(path: str, data: object) -> None:
+	"""在目标文件同目录完成 flush、fsync 与原子替换。"""
+	target = os.path.abspath(path)
+	directory = os.path.dirname(target) or os.curdir
+	os.makedirs(directory, exist_ok=True)
+	fd, temporary_path = tempfile.mkstemp(prefix=f'.{os.path.basename(target)}.', suffix='.tmp', dir=directory)
+	try:
+		if os.path.exists(target):
+			os.fchmod(fd, os.stat(target).st_mode & 0o777)
+		with os.fdopen(fd, 'w', encoding='utf-8') as file_obj:
+			fd = -1
+			json.dump(data, file_obj, ensure_ascii=False, indent=2, allow_nan=False)
+			file_obj.flush()
+			os.fsync(file_obj.fileno())
+		os.replace(temporary_path, target)
+	except Exception:
+		if fd >= 0:
+			os.close(fd)
+		try:
+			os.unlink(temporary_path)
+		except FileNotFoundError:
+			pass
+		raise
 
 
 @dataclass(frozen=True)
@@ -68,23 +105,48 @@ _SUCCESS_MESSAGE_KEYWORDS = (
 
 def load_daily_check_in_state():
 	"""加载每日签到状态"""
+	if not os.path.exists(DAILY_CHECK_IN_STATE_FILE):
+		return {}
 	try:
-		if os.path.exists(DAILY_CHECK_IN_STATE_FILE):
-			with open(DAILY_CHECK_IN_STATE_FILE, 'r', encoding='utf-8') as f:
-				data = json.load(f)
-				return data if isinstance(data, dict) else {}
-	except Exception as e:
-		print(f'Warning: Failed to load daily check-in state: {e}')
-	return {}
+		with open(DAILY_CHECK_IN_STATE_FILE, 'r', encoding='utf-8') as f:
+			data = json.load(f, parse_constant=_reject_non_finite_json)
+		if not isinstance(data, dict):
+			raise ValueError('root value is not an object')
+		for field in ('accounts_checked', 'providers_checked', 'details'):
+			if field in data and not isinstance(data[field], dict):
+				raise ValueError(f'{field} is not an object')
+		date = data.get('date')
+		if date is not None and (not isinstance(date, str) or re.fullmatch(r'\d{4}-\d{2}-\d{2}', date) is None):
+			raise ValueError('date is not YYYY-MM-DD')
+		for field in ('accounts_checked', 'providers_checked'):
+			for key, value in data.get(field, {}).items():
+				if not isinstance(key, str) or not isinstance(value, bool):
+					raise ValueError(f'{field} must map string keys to booleans')
+		for key, value in data.get('details', {}).items():
+			if not isinstance(key, str) or not isinstance(value, dict):
+				raise ValueError('details must map string keys to objects')
+		return data
+	except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
+		raise StateFileError(f'Cannot safely load daily check-in state: {e}') from e
 
 
 def save_daily_check_in_state(state):
 	"""保存每日签到状态"""
-	try:
-		with open(DAILY_CHECK_IN_STATE_FILE, 'w', encoding='utf-8') as f:
-			json.dump(state, f, ensure_ascii=False, indent=2)
-	except Exception as e:
-		print(f'Warning: Failed to save daily check-in state: {e}')
+	_atomic_write_json(DAILY_CHECK_IN_STATE_FILE, state)
+
+
+def state_has_checked_in_today(state: dict, *, provider: str | None = None, account_key: str | None = None):
+	"""在已加载的状态上检查账号，避免主流程反复读取同一文件。"""
+	today = datetime.now().strftime('%Y-%m-%d')
+	if state.get('date') != today:
+		return False
+	if account_key:
+		accounts_checked = state.get('accounts_checked', {})
+		return isinstance(accounts_checked, dict) and accounts_checked.get(account_key) is True
+	if provider:
+		providers_checked = state.get('providers_checked', {})
+		return isinstance(providers_checked, dict) and providers_checked.get(provider) is True
+	return state.get('checked_in') is True or state.get('balance_increased') is True
 
 
 def has_checked_in_today(provider: str | None = None, account_key: str | None = None):
@@ -94,42 +156,42 @@ def has_checked_in_today(provider: str | None = None, account_key: str | None = 
 		provider: 可选，如果指定则检查特定 provider 的签到状态
 		account_key: 可选，如果指定则检查特定账号的签到状态
 	"""
-	state = load_daily_check_in_state()
-	today = datetime.now().strftime('%Y-%m-%d')
-	if state.get('date') != today:
-		return False
-	if account_key:
-		# 检查特定账号是否已成功签到
-		accounts_checked = state.get('accounts_checked', {})
-		return accounts_checked.get(account_key, False)
-	if provider:
-		providers_checked = state.get('providers_checked', {})
-		return providers_checked.get(provider, False)
-	return state.get('checked_in') is True or state.get('balance_increased') is True
+	return state_has_checked_in_today(load_daily_check_in_state(), provider=provider, account_key=account_key)
 
 
 def mark_checked_in_today(details, run_time: str, provider: str | None = None, account_keys: list | None = None):
 	"""记录今天已经成功处理的账号，并在跨日时清空旧标记。"""
+	account_keys_by_provider = {provider: list(account_keys or [])} if provider else {}
+	mark_accounts_checked_in_today(details, run_time, account_keys_by_provider)
+
+
+def mark_accounts_checked_in_today(
+	details: dict, run_time: str, account_keys_by_provider: dict[str, list[str]]
+) -> None:
+	"""一次原子写入本轮全部成功账号，避免 provider 间留下半份状态。"""
 	state = load_daily_check_in_state()
 	today = datetime.now().strftime('%Y-%m-%d')
 	if state.get('date') != today:
 		state = {}
 	state['date'] = today
 	state['run_time'] = run_time
-	if account_keys:
-		accounts_checked = state.get('accounts_checked', {})
-		for ak in account_keys:
-			accounts_checked[ak] = True
-		state['accounts_checked'] = accounts_checked
-	if provider:
-		providers_checked = state.get('providers_checked', {})
+	accounts_checked = state.get('accounts_checked', {})
+	providers_checked = state.get('providers_checked', {})
+	all_account_keys: list[str] = []
+	for provider, account_keys in account_keys_by_provider.items():
+		if not account_keys:
+			continue
 		providers_checked[provider] = True
-		state['providers_checked'] = providers_checked
+		for account_key in account_keys:
+			accounts_checked[account_key] = True
+			all_account_keys.append(account_key)
+	state['accounts_checked'] = accounts_checked
+	state['providers_checked'] = providers_checked
 	state['checked_in'] = True
 	stored_details = state.get('details', {})
 	if not isinstance(stored_details, dict):
 		stored_details = {}
-	for account_key in account_keys or []:
+	for account_key in all_account_keys:
 		if account_key in details:
 			stored_details[account_key] = details[account_key]
 	state['details'] = stored_details
@@ -138,37 +200,101 @@ def mark_checked_in_today(details, run_time: str, provider: str | None = None, a
 
 def load_balance_snapshot() -> dict[str, dict[str, float]]:
 	"""加载按稳定账号键保存的余额快照，兼容旧版哈希文件。"""
+	if not os.path.exists(BALANCE_HASH_FILE):
+		return {}
 	try:
-		if not os.path.exists(BALANCE_HASH_FILE):
-			return {}
 		with open(BALANCE_HASH_FILE, 'r', encoding='utf-8') as f:
-			data = json.load(f)
+			raw = f.read()
+		try:
+			data = json.loads(raw, parse_constant=_reject_non_finite_json)
+		except json.JSONDecodeError:
+			if re.fullmatch(r'[0-9a-fA-F]{16}', raw.strip()):
+				print('[WARN] Legacy balance hash cannot restore per-account balances; waiting for a complete snapshot')
+				return {}
+			raise
 		if not isinstance(data, dict):
-			return {}
-		return {
-			str(key): {'quota': float(value['quota'])}
-			for key, value in data.items()
-			if isinstance(value, dict) and isinstance(value.get('quota'), (int, float))
-		}
-	except json.JSONDecodeError:
-		print('[WARN] Legacy balance hash cannot restore per-account balances; waiting for a complete snapshot')
-		return {}
-	except (OSError, ValueError, TypeError, KeyError):
-		return {}
+			raise ValueError('root value is not an object')
+		result: dict[str, dict[str, float]] = {}
+		for key, value in data.items():
+			if not isinstance(value, dict):
+				raise ValueError(f'account {key!s} is not an object')
+			quota = value.get('quota')
+			if not _is_finite_amount(quota):
+				raise ValueError(f'account {key!s} has invalid quota')
+			quota = cast(int | float, quota)
+			entry = {'quota': float(quota)}
+			if 'used' in value:
+				used = value.get('used')
+				if not _is_finite_amount(used):
+					raise ValueError(f'account {key!s} has invalid used amount')
+				used = cast(int | float, used)
+				entry['used'] = float(used)
+			evidence_fields = ('evidence_quota', 'evidence_used')
+			if any(field in value for field in evidence_fields):
+				if not all(field in value and _is_finite_amount(value.get(field)) for field in evidence_fields):
+					raise ValueError(f'account {key!s} has incomplete reward evidence')
+				for field in evidence_fields:
+					amount = cast(int | float, value[field])
+					entry[field] = float(amount)
+			result[str(key)] = entry
+		return result
+	except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as e:
+		raise StateFileError(f'Cannot safely load balance snapshot: {e}') from e
 
 
 def save_balance_snapshot(balances: dict[str, dict[str, float]]) -> None:
-	"""只保存余额 quota，避免累计消耗变化触发通知。"""
-	try:
-		with open(BALANCE_HASH_FILE, 'w', encoding='utf-8') as f:
-			json.dump(
-				{key: {'quota': value['quota']} for key, value in sorted(balances.items())},
-				f,
-				ensure_ascii=False,
-				indent=2,
-			)
-	except (OSError, TypeError, KeyError) as e:
-		print(f'Warning: Failed to save balance snapshot: {e}')
+	"""保存 quota 与 used；通知哈希仍只比较 quota。"""
+	snapshot: dict[str, dict[str, float]] = {}
+	for key, value in sorted(balances.items()):
+		quota = value.get('quota')
+		if not _is_finite_amount(quota):
+			raise ValueError(f'Invalid quota for {key}')
+		quota = cast(int | float, quota)
+		entry = {'quota': float(quota)}
+		if 'used' in value:
+			used = value.get('used')
+			if not _is_finite_amount(used):
+				raise ValueError(f'Invalid used amount for {key}')
+			used = cast(int | float, used)
+			entry['used'] = float(used)
+		evidence_fields = ('evidence_quota', 'evidence_used')
+		if any(field in value for field in evidence_fields):
+			if not all(field in value and _is_finite_amount(value.get(field)) for field in evidence_fields):
+				raise ValueError(f'Invalid reward evidence for {key}')
+			for field in evidence_fields:
+				amount = cast(int | float, value[field])
+				entry[field] = float(amount)
+		snapshot[key] = entry
+	_atomic_write_json(BALANCE_HASH_FILE, snapshot)
+
+
+def _is_finite_amount(value: object) -> bool:
+	return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def _reward_evidence_from_snapshot(snapshot: dict | None) -> dict | None:
+	"""优先返回未被失败运行覆盖的自动签到证据基线。"""
+	if not isinstance(snapshot, dict):
+		return None
+	quota = snapshot.get('evidence_quota', snapshot.get('quota'))
+	used = snapshot.get('evidence_used', snapshot.get('used'))
+	if not _is_finite_amount(quota) or not _is_finite_amount(used):
+		return None
+	return {'success': True, 'quota': quota, 'used_quota': used}
+
+
+def _add_automatic_reward_evidence(entry: dict[str, float], previous: dict | None, *, confirmed: bool) -> None:
+	"""成功时前移证据；未确认时保留旧证据，首次运行则建立待跨日比较的基线。"""
+	source = (
+		{'success': True, 'quota': entry.get('quota'), 'used_quota': entry.get('used')}
+		if confirmed
+		else _reward_evidence_from_snapshot(previous)
+	)
+	if source is None:
+		source = {'success': True, 'quota': entry.get('quota'), 'used_quota': entry.get('used')}
+	if _is_finite_amount(source.get('quota')) and _is_finite_amount(source.get('used_quota')):
+		entry['evidence_quota'] = float(cast(int | float, source['quota']))
+		entry['evidence_used'] = float(cast(int | float, source['used_quota']))
 
 
 def generate_balance_hash(balances):
@@ -193,14 +319,19 @@ def should_send_notification(*, balance_changed: bool, has_failures: bool) -> bo
 def parse_cookies(cookies_data):
 	"""解析 cookies 数据"""
 	if isinstance(cookies_data, dict):
-		return cookies_data
+		return {
+			str(key).strip(): str(value)
+			for key, value in cookies_data.items()
+			if isinstance(key, str) and key.strip() and isinstance(value, str) and value
+		}
 
 	if isinstance(cookies_data, str):
 		cookies_dict = {}
 		for cookie in cookies_data.split(';'):
 			if '=' in cookie:
 				key, value = cookie.strip().split('=', 1)
-				cookies_dict[key] = value
+				if key and value:
+					cookies_dict[key] = value
 		return cookies_dict
 	return {}
 
@@ -458,10 +589,18 @@ def get_user_info(client, headers, user_info_url: str):
 
 		if response.status_code == 200:
 			data = response.json()
-			if data.get('success'):
+			if isinstance(data, dict) and data.get('success'):
 				user_data = data.get('data', {})
-				quota = round(user_data.get('quota', 0) / 500000, 2)
-				used_quota = round(user_data.get('used_quota', 0) / 500000, 2)
+				if not isinstance(user_data, dict):
+					return {'success': False, 'error': 'Failed to get user info: invalid data object'}
+				raw_quota = user_data.get('quota')
+				raw_used_quota = user_data.get('used_quota')
+				if not _is_finite_amount(raw_quota) or not _is_finite_amount(raw_used_quota):
+					return {'success': False, 'error': 'Failed to get user info: invalid quota values'}
+				raw_quota = cast(int | float, raw_quota)
+				raw_used_quota = cast(int | float, raw_used_quota)
+				quota = round(float(raw_quota) / 500000, 2)
+				used_quota = round(float(raw_used_quota) / 500000, 2)
 				return {
 					'success': True,
 					'quota': quota,
@@ -627,11 +766,12 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 		balance_change = detail.get('balance_change') or 0
 		baseline_balance_change = detail.get('baseline_balance_change') or 0
 
-		has_reward = check_in_reward != 0
-		has_usage = usage_increase != 0
+		has_reward = check_in_reward > 0
+		has_usage = usage_increase > 0
+		usage_counter_reset = usage_increase < 0
 		has_baseline_change = baseline_balance_change != 0
 
-		if has_reward or has_usage or has_baseline_change:
+		if has_reward or has_usage or usage_counter_reset or has_baseline_change:
 			lines.append('  ━━━━━━━━━━━━━━━━━━━━')
 
 			if not has_reward and has_usage:
@@ -642,6 +782,8 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 
 			if has_usage:
 				lines.append(f'  📉 期间消耗: ${usage_increase:.2f}')
+			elif usage_counter_reset:
+				lines.append('  ℹ️ 累计消耗计数器已重置')
 
 			if balance_change != 0:
 				change_symbol = '+' if balance_change > 0 else ''
@@ -686,7 +828,9 @@ async def check_in_account(
 	auth_method = None
 	if account.has_login_credentials():
 		print(f'[INFO] {account_name}: Attempting email/password login (priority)...')
-		assert account.email is not None and account.password is not None
+		if account.email is None or account.password is None:
+			print(f'[FAILED] {account_name}: Incomplete email/password configuration')
+			return False, None, None
 		login_result = await login_with_credentials(
 			account_name,
 			provider_config,
@@ -819,8 +963,32 @@ async def main():
 
 	print(f'[INFO] Found {len(accounts)} account configurations')
 
-	last_balance_snapshot = load_balance_snapshot()
-	daily_check_in_state = load_daily_check_in_state()
+	account_keys = [get_account_state_key(account) for account in accounts]
+	unknown_providers = sorted(
+		{account.provider for account in accounts if app_config.get_provider(account.provider) is None}
+	)
+	if unknown_providers:
+		error_msg = '[FAILED] Unknown account provider(s); no account requests were sent: ' + ', '.join(
+			unknown_providers
+		)
+		print(error_msg)
+		notify.push_message('Check-in Alert', error_msg, msg_type='text')
+		sys.exit(1)
+	duplicate_keys = sorted({key for key in account_keys if account_keys.count(key) > 1})
+	if duplicate_keys:
+		error_msg = '[FAILED] Duplicate account identities would overwrite check-in state: ' + ', '.join(duplicate_keys)
+		print(error_msg)
+		notify.push_message('Check-in Alert', error_msg, msg_type='text')
+		sys.exit(1)
+
+	try:
+		last_balance_snapshot = load_balance_snapshot()
+		daily_check_in_state = load_daily_check_in_state()
+	except StateFileError as e:
+		error_msg = f'[FAILED] State file safety check failed; no account requests were sent: {e}'
+		print(error_msg)
+		notify.push_message('Check-in Alert', error_msg, msg_type='text')
+		sys.exit(1)
 
 	success_count = 0
 	total_count = len(accounts)
@@ -831,13 +999,15 @@ async def main():
 	balance_changed = False  # 余额是否有变化
 
 	for i, account in enumerate(accounts):
-		account_key = get_account_state_key(account)
+		account_key = account_keys[i]
 		legacy_account_key = f'account_{i + 1}'
 		account_name = account.get_display_name(i)
 		legacy_state_matches = legacy_account_state_matches(
 			daily_check_in_state, legacy_account_key, account_name, account.provider
 		)
-		skip_check_in = has_checked_in_today(account_key=account_key) or legacy_state_matches
+		skip_check_in = (
+			state_has_checked_in_today(daily_check_in_state, account_key=account_key) or legacy_state_matches
+		)
 
 		# Cookie 账号做只读余额复核，捕获浏览器或其他客户端产生的奖励；邮箱账号避免重复浏览器登录。
 		if skip_check_in:
@@ -890,9 +1060,15 @@ async def main():
 					detail['after_quota'] = fallback_quota
 			account_check_in_details[account_key] = detail
 			if isinstance(detail.get('after_quota'), (int, float)):
-				current_balances[account_key] = {
-					'quota': detail['after_quota'],
-				}
+				current_balance = {'quota': detail['after_quota']}
+				if _is_finite_amount(detail.get('after_used')):
+					current_balance['used'] = detail['after_used']
+				provider_config = app_config.get_provider(account.provider)
+				if provider_config is not None and not provider_config.needs_manual_check_in():
+					_add_automatic_reward_evidence(
+						current_balance, last_balance_snapshot.get(account_key), confirmed=True
+					)
+				current_balances[account_key] = current_balance
 			success_count += 1
 			continue
 
@@ -905,6 +1081,27 @@ async def main():
 				if user_info_after
 				else ('success' if success else 'failed')
 			)
+			verification_error = ''
+			provider_config = app_config.get_provider(account.provider)
+			if (
+				success
+				and check_in_status == 'success'
+				and provider_config is not None
+				and not provider_config.needs_manual_check_in()
+			):
+				previous_balance = last_balance_snapshot.get(account_key)
+				baseline_info = _reward_evidence_from_snapshot(previous_balance)
+				reward = _reward_amount(baseline_info, user_info_after)
+				if reward is None or reward <= 0:
+					success = False
+					check_in_status = 'failed'
+					verification_error = (
+						'自动签到资料请求成功，但与上次完整余额/消耗快照相比没有正向奖励证据；本次不记录为已签到'
+					)
+					print(f'[FAILED] {account_name}: {verification_error}')
+				elif baseline_info is not None:
+					user_info_before = baseline_info
+					print(f'[SUCCESS] {account_name}: Automatic reward confirmed: +${reward:.2f}')
 			if success:
 				success_count += 1
 
@@ -920,11 +1117,17 @@ async def main():
 			if user_info_after and user_info_after.get('success'):
 				after_quota = user_info_after['quota']
 				after_used = user_info_after['used_quota']
-				current_balances[account_key] = {'quota': after_quota, 'used': after_used}
+				current_balance = {'quota': after_quota, 'used': after_used}
+				if provider_config is not None and not provider_config.needs_manual_check_in():
+					_add_automatic_reward_evidence(
+						current_balance, last_balance_snapshot.get(account_key), confirmed=success
+					)
+				current_balances[account_key] = current_balance
 				if user_info_before and user_info_before.get('success'):
 					before_quota = user_info_before['quota']
 					before_used = user_info_before['used_quota']
 					balance_change = after_quota - before_quota
+					check_in_reward = _reward_amount(user_info_before, user_info_after)
 					account_check_in_details[account_key] = {
 						'name': account_name,
 						'provider': account.provider,
@@ -932,12 +1135,13 @@ async def main():
 						'before_used': before_used,
 						'after_quota': after_quota,
 						'after_used': after_used,
-						'check_in_reward': after_quota - before_quota + after_used - before_used,
+						'check_in_reward': check_in_reward,
 						'usage_increase': after_used - before_used,
 						'balance_change': balance_change,
 						'success': success,
 						'skipped': skip_check_in or check_in_status == 'already_checked',
 						'check_in_status': check_in_status,
+						'error': verification_error,
 					}
 				else:
 					account_check_in_details[account_key] = {
@@ -951,9 +1155,9 @@ async def main():
 						'usage_increase': None,
 						'balance_change': None,
 						'success': success,
-						'error': user_info_before.get('error') if user_info_before else '',
 						'skipped': skip_check_in or check_in_status == 'already_checked',
 						'check_in_status': check_in_status,
+						'error': verification_error or (user_info_before.get('error') if user_info_before else ''),
 					}
 			else:
 				error_msg = user_info_after.get('error', 'Login failed') if user_info_after else 'Login failed'
@@ -1035,28 +1239,27 @@ async def main():
 				if not any(account_name in item for item in notification_content):
 					notification_content.append(account_result)
 
-	if balances_complete:
-		save_balance_snapshot(current_balances)
-
 	# 保存所有成功签到的账号状态（不仅仅是余额增长的）
-	successful_account_keys = []
+	successful_account_keys: list[str] = []
+	persistence_error = ''
 	if account_check_in_details:
 		for account_key, detail in account_check_in_details.items():
 			if detail.get('success', False):
 				successful_account_keys.append(account_key)
+	try:
 		if successful_account_keys:
-			# 只将账号写入自己的 provider 状态，避免跨 provider 污染。
-			for provider in {detail.get('provider') or 'anyrouter' for detail in account_check_in_details.values()}:
-				provider_account_keys = [
-					key
-					for key, detail in account_check_in_details.items()
-					if detail.get('success', False) and (detail.get('provider') or 'anyrouter') == provider
-				]
-				if not provider_account_keys:
-					continue
-				mark_checked_in_today(
-					account_check_in_details, current_time, provider=provider, account_keys=provider_account_keys
-				)
+			account_keys_by_provider: dict[str, list[str]] = {}
+			for account_key in successful_account_keys:
+				provider = account_check_in_details[account_key].get('provider') or 'anyrouter'
+				account_keys_by_provider.setdefault(provider, []).append(account_key)
+			mark_accounts_checked_in_today(account_check_in_details, current_time, account_keys_by_provider)
+		# 成功状态优先持久化。若余额基线写入失败，已到账账号不会被下一轮重复签到。
+		if balances_complete:
+			save_balance_snapshot(current_balances)
+	except (OSError, ValueError, TypeError, StateFileError) as e:
+		persistence_error = f'状态保存失败: {str(e)[:160]}'
+		has_failures = True
+		print(f'[FAILED] {persistence_error}')
 
 	if (
 		should_send_notification(balance_changed=balance_changed, has_failures=has_failures)
@@ -1103,9 +1306,13 @@ async def main():
 
 			section = f'{provider_title}\n\n' + '\n\n'.join(notify_items)
 			all_sections.append(section)
+		if persistence_error:
+			all_sections.append(f'❌ 本地状态持久化失败\n\n{persistence_error}')
 
 		# 总体标题
-		if success_count == total_count:
+		if success_count == total_count and persistence_error:
+			notify_title = f'⚠️ 签到完成但状态保存失败 ({success_count}/{total_count})'
+		elif success_count == total_count:
 			notify_title = f'✅ 签到全部成功 ({success_count}/{total_count})'
 		elif success_count > 0:
 			notify_title = f'⚠️ 签到部分成功 ({success_count}/{total_count})'
@@ -1119,8 +1326,10 @@ async def main():
 		print(notify_title)
 		print('')
 		print(notify_content)
-		notify.push_message(notify_title, notify_content, msg_type='text')
-		print('[NOTIFY] Combined notification sent')
+		if notify.push_message(notify_title, notify_content, msg_type='text'):
+			print('[NOTIFY] Combined notification delivered through at least one channel')
+		else:
+			print('[WARN] Every configured notification delivery attempt failed')
 
 	else:
 		print('[INFO] Balances unchanged and no check-in failures, notification skipped')

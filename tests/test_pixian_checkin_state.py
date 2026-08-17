@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -15,9 +16,11 @@ from pixian_overlay.app import (
 	generate_balance_hash,
 	get_account_state_key,
 	get_skipped_account_detail,
+	get_user_info,
 	legacy_account_state_matches,
 	mark_checked_in_today,
 	parse_check_in_response,
+	parse_cookies,
 	prepare_cookies,
 	run_check_in_requests,
 	should_send_notification,
@@ -133,6 +136,25 @@ def test_notification_shows_balance_change_from_previous_snapshot():
 	assert '今日已签到，无变化' not in content
 
 
+def test_notification_formats_usage_counter_reset_without_negative_consumption():
+	content = format_check_in_notification(
+		{
+			'name': 'account',
+			'success': True,
+			'before_quota': 100,
+			'before_used': 50,
+			'after_quota': 100,
+			'after_used': 0,
+			'check_in_reward': 0,
+			'usage_increase': -50,
+			'balance_change': 0,
+		}
+	)
+
+	assert '累计消耗计数器已重置' in content
+	assert '期间消耗: $-50.00' not in content
+
+
 def test_account_state_key_is_stable_when_account_order_changes():
 	account = AccountConfig(cookies={'session': 'token'}, api_user='123', provider='anyrouter', name='primary')
 	assert get_account_state_key(account) == 'anyrouter:123'
@@ -192,6 +214,108 @@ def test_mark_checked_in_keeps_other_provider_details(tmp_path, monkeypatch):
 		'agentrouter:one': {'success': True, 'after_quota': 450},
 		'anyrouter:two': {'success': True, 'after_quota': 6926.3},
 	}
+
+
+def test_daily_state_write_is_atomic_when_replace_fails(tmp_path, monkeypatch):
+	state_file = tmp_path / 'daily_checkin_state.json'
+	state_file.write_text('{"date":"old"}', encoding='utf-8')
+	monkeypatch.setattr(checkin, 'DAILY_CHECK_IN_STATE_FILE', str(state_file))
+	monkeypatch.setattr(checkin.os, 'replace', MagicMock(side_effect=OSError('disk failure')))
+
+	with pytest.raises(OSError, match='disk failure'):
+		checkin.save_daily_check_in_state({'date': 'new'})
+
+	assert json.loads(state_file.read_text(encoding='utf-8')) == {'date': 'old'}
+	assert list(tmp_path.glob('.daily_checkin_state.json.*.tmp')) == []
+
+
+def test_balance_snapshot_write_is_atomic_when_replace_fails(tmp_path, monkeypatch):
+	balance_file = tmp_path / 'balance_hash.txt'
+	balance_file.write_text('{"account":{"quota":100,"used":10}}', encoding='utf-8')
+	monkeypatch.setattr(checkin, 'BALANCE_HASH_FILE', str(balance_file))
+	monkeypatch.setattr(checkin.os, 'replace', MagicMock(side_effect=OSError('disk failure')))
+
+	with pytest.raises(OSError, match='disk failure'):
+		checkin.save_balance_snapshot({'account': {'quota': 125, 'used': 10}})
+
+	assert json.loads(balance_file.read_text(encoding='utf-8')) == {'account': {'quota': 100, 'used': 10}}
+	assert list(tmp_path.glob('.balance_hash.txt.*.tmp')) == []
+
+
+def test_balance_snapshot_preserves_used_for_cross_run_reward_proof(tmp_path, monkeypatch):
+	balance_file = tmp_path / 'balance_hash.txt'
+	monkeypatch.setattr(checkin, 'BALANCE_HASH_FILE', str(balance_file))
+
+	checkin.save_balance_snapshot({'account': {'quota': 100, 'used': 35}})
+
+	assert checkin.load_balance_snapshot() == {'account': {'quota': 100.0, 'used': 35.0}}
+
+
+def test_balance_snapshot_preserves_automatic_reward_evidence(tmp_path, monkeypatch):
+	balance_file = tmp_path / 'balance_hash.txt'
+	monkeypatch.setattr(checkin, 'BALANCE_HASH_FILE', str(balance_file))
+
+	checkin.save_balance_snapshot(
+		{
+			'account': {
+				'quota': 75,
+				'used': 25,
+				'evidence_quota': 100,
+				'evidence_used': 0,
+			}
+		}
+	)
+
+	assert checkin.load_balance_snapshot() == {
+		'account': {'quota': 75.0, 'used': 25.0, 'evidence_quota': 100.0, 'evidence_used': 0.0}
+	}
+
+
+def test_corrupt_daily_state_is_rejected_instead_of_silently_rechecking(tmp_path, monkeypatch):
+	state_file = tmp_path / 'daily_checkin_state.json'
+	state_file.write_text('{broken', encoding='utf-8')
+	monkeypatch.setattr(checkin, 'DAILY_CHECK_IN_STATE_FILE', str(state_file))
+
+	with pytest.raises(checkin.StateFileError, match='daily check-in state'):
+		checkin.load_daily_check_in_state()
+
+
+def test_corrupt_balance_snapshot_is_rejected(tmp_path, monkeypatch):
+	balance_file = tmp_path / 'balance_hash.txt'
+	balance_file.write_text('{broken', encoding='utf-8')
+	monkeypatch.setattr(checkin, 'BALANCE_HASH_FILE', str(balance_file))
+
+	with pytest.raises(checkin.StateFileError, match='balance snapshot'):
+		checkin.load_balance_snapshot()
+
+
+def test_daily_state_rejects_invalid_nested_types(tmp_path, monkeypatch):
+	state_file = tmp_path / 'daily_checkin_state.json'
+	state_file.write_text('{"date":"2026-08-17","accounts_checked":{"account":1}}', encoding='utf-8')
+	monkeypatch.setattr(checkin, 'DAILY_CHECK_IN_STATE_FILE', str(state_file))
+
+	with pytest.raises(checkin.StateFileError, match='accounts_checked'):
+		checkin.load_daily_check_in_state()
+
+
+def test_parse_cookies_drops_empty_or_non_string_entries():
+	assert parse_cookies({'session': 'valid', '': 'bad', 'empty': '', 'number': 123}) == {'session': 'valid'}
+	assert parse_cookies('session=valid; =bad; empty=') == {'session': 'valid'}
+
+
+def test_user_info_rejects_non_finite_quota():
+	client = MagicMock()
+	response = MagicMock(status_code=200)
+	response.json.return_value = {
+		'success': True,
+		'data': {'quota': float('nan'), 'used_quota': 0},
+	}
+	client.get.return_value = response
+
+	result = get_user_info(client, {}, 'https://example.test/api/user/self')
+
+	assert result['success'] is False
+	assert 'invalid quota values' in result['error']
 
 
 def test_skipped_account_detail_uses_saved_balance_without_repeating_reward():

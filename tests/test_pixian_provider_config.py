@@ -1,6 +1,6 @@
 import json
 
-from pixian_overlay.utils.config import AppConfig, ProviderConfig
+from pixian_overlay.utils.config import AppConfig, ProviderConfig, load_accounts_config
 
 
 def test_builtin_provider_profile_persistence_defaults(monkeypatch):
@@ -68,3 +68,44 @@ def test_custom_provider_can_override_console_path_and_user_info_path():
 	)
 	assert provider.console_path == '/dashboard'
 	assert provider.user_info_path == '/api/profile'
+
+
+def test_account_config_rejects_null_api_user_without_email_login(monkeypatch):
+	monkeypatch.setenv(
+		'ANYROUTER_ACCOUNTS',
+		json.dumps([{'api_user': None, 'cookies': {'session': 'token'}, 'provider': 'anyrouter'}]),
+	)
+
+	assert load_accounts_config() is None
+
+
+def test_account_config_normalizes_string_identity_fields(monkeypatch):
+	monkeypatch.setenv(
+		'ANYROUTER_ACCOUNTS',
+		json.dumps(
+			[
+				{
+					'api_user': 123,
+					'cookies': {'session': 'token'},
+					'provider': ' anyrouter ',
+					'name': ' primary ',
+				}
+			]
+		),
+	)
+
+	accounts = load_accounts_config()
+
+	assert accounts is not None
+	assert accounts[0].api_user == '123'
+	assert accounts[0].provider == 'anyrouter'
+	assert accounts[0].name == 'primary'
+
+
+def test_provider_rejects_invalid_domain():
+	try:
+		ProviderConfig(name='custom', domain='not-a-url')
+	except ValueError as error:
+		assert 'http' in str(error).lower()
+	else:
+		raise AssertionError('invalid provider domain must be rejected')

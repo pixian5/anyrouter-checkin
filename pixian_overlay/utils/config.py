@@ -7,6 +7,7 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Dict, List, Literal
+from urllib.parse import urlsplit
 
 
 @dataclass
@@ -25,15 +26,43 @@ class ProviderConfig:
 	persist_profile: bool = False
 
 	def __post_init__(self):
-		required_waf_cookies = set()
-		if self.waf_cookie_names and isinstance(self.waf_cookie_names, List):
+		if not isinstance(self.name, str) or not self.name.strip():
+			raise ValueError('provider name cannot be empty')
+		self.name = self.name.strip()
+		if not isinstance(self.domain, str):
+			raise ValueError('provider domain must be an HTTP(S) URL')
+		self.domain = self.domain.strip().rstrip('/')
+		parsed_domain = urlsplit(self.domain)
+		if parsed_domain.scheme not in {'http', 'https'} or not parsed_domain.netloc:
+			raise ValueError('provider domain must be an HTTP(S) URL')
+		for field_name in ('login_path', 'console_path', 'user_info_path'):
+			path = getattr(self, field_name)
+			if not isinstance(path, str) or not path.startswith('/'):
+				raise ValueError(f'{field_name} must start with /')
+		if self.sign_in_path is not None and (
+			not isinstance(self.sign_in_path, str) or not self.sign_in_path.startswith('/')
+		):
+			raise ValueError('sign_in_path must be null or start with /')
+		if not isinstance(self.api_user_key, str) or not self.api_user_key.strip():
+			raise ValueError('api_user_key cannot be empty')
+		self.api_user_key = self.api_user_key.strip()
+		if not isinstance(self.persist_profile, bool):
+			raise ValueError('persist_profile must be a boolean')
+		if self.bypass_method not in (None, 'waf_cookies'):
+			raise ValueError('unsupported bypass_method')
+		if self.waf_cookie_names is not None and not isinstance(self.waf_cookie_names, list):
+			raise ValueError('waf_cookie_names must be an array')
+
+		required_waf_cookies: list[str] = []
+		if self.waf_cookie_names:
 			for item in self.waf_cookie_names:
 				name = '' if not item or not isinstance(item, str) else item.strip()
 				if not name:
 					print(f'[WARNING] Found invalid WAF cookie name: {item}')
 					continue
 
-				required_waf_cookies.add(name)
+				if name not in required_waf_cookies:
+					required_waf_cookies.append(name)
 
 		if not required_waf_cookies:
 			self.bypass_method = None
@@ -160,15 +189,20 @@ class AccountConfig:
 	@classmethod
 	def from_dict(cls, data: dict, index: int) -> 'AccountConfig':
 		"""从字典创建 AccountConfig"""
-		provider = data.get('provider', 'anyrouter')
-		name = data.get('name')  # No default - let get_display_name fall through to email/api_user
+		provider = data.get('provider', 'anyrouter').strip()
+		name = data.get('name')
+		name = name.strip() if isinstance(name, str) else name
+		email = data.get('email')
+		email = email.strip() if isinstance(email, str) else email
+		api_user = data.get('api_user')
+		api_user = str(api_user).strip() if api_user is not None else None
 
 		return cls(
 			cookies=data.get('cookies'),
-			api_user=data.get('api_user'),
+			api_user=api_user,
 			provider=provider,
 			name=name,
-			email=data.get('email'),
+			email=email,
 			password=data.get('password'),
 		)
 
@@ -212,22 +246,34 @@ def load_accounts_config() -> list[AccountConfig] | None:
 				print(f'ERROR: Account {i + 1} configuration format is incorrect')
 				return None
 
-			if 'api_user' not in account_dict:
-				has_login = account_dict.get('email') and account_dict.get('password')
-				if not has_login:
-					print(
-						f'ERROR: Account {i + 1} missing required field (api_user) - only email+password login can omit it'
-					)
-					return None
+			provider = account_dict.get('provider', 'anyrouter')
+			if not isinstance(provider, str) or not provider.strip():
+				print(f'ERROR: Account {i + 1} provider must be a non-empty string')
+				return None
+			email = account_dict.get('email')
+			password = account_dict.get('password')
+			if email is not None and (not isinstance(email, str) or not email.strip()):
+				print(f'ERROR: Account {i + 1} email must be a non-empty string')
+				return None
+			if password is not None and (not isinstance(password, str) or not password):
+				print(f'ERROR: Account {i + 1} password must be a non-empty string')
+				return None
+			has_login = bool(email and password)
+			api_user = account_dict.get('api_user')
+			if not has_login and (api_user is None or not str(api_user).strip()):
+				print(
+					f'ERROR: Account {i + 1} missing required field (api_user) - only email+password login can omit it'
+				)
+				return None
 
 			has_cookies = 'cookies' in account_dict and account_dict['cookies']
-			has_login = account_dict.get('email') and account_dict.get('password')
-
 			if not has_cookies and not has_login:
 				print(f'ERROR: Account {i + 1} must have either cookies or email+password')
 				return None
 
-			if 'name' in account_dict and not account_dict['name']:
+			if 'name' in account_dict and (
+				not isinstance(account_dict['name'], str) or not account_dict['name'].strip()
+			):
 				print(f'ERROR: Account {i + 1} name field cannot be empty')
 				return None
 

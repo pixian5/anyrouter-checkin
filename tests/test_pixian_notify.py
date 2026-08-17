@@ -175,7 +175,33 @@ def test_push_message(notification_kit, monkeypatch):
 		mocks[method_name] = method_mock
 		monkeypatch.setattr(notification_kit, method_name, method_mock)
 
-	notification_kit.push_message('测试标题', '测试内容')
+	result = notification_kit.push_message('测试标题', '测试内容')
 
 	for method_mock in mocks.values():
 		assert method_mock.called
+	assert result is True
+
+
+def test_push_message_reports_when_every_delivery_fails(notification_kit, monkeypatch):
+	for method_name in (
+		'send_email',
+		'send_pushplus',
+		'send_serverPush',
+		'send_dingtalk',
+		'send_feishu',
+		'send_wecom',
+		'send_gotify',
+		'send_telegram',
+		'send_bark',
+	):
+		monkeypatch.setattr(notification_kit, method_name, MagicMock(side_effect=RuntimeError('offline')))
+
+	assert notification_kit.push_message('测试标题', '测试内容') is False
+
+
+def test_invalid_gotify_priority_does_not_break_notification_initialization(monkeypatch):
+	monkeypatch.setenv('GOTIFY_PRIORITY', 'not-a-number')
+
+	kit = NotificationKit()
+
+	assert kit.gotify_priority == 9

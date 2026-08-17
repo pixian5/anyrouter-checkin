@@ -43,6 +43,25 @@ def test_overlay_detects_reward_when_consumption_offsets_balance_gain(monkeypatc
 	original.assert_called_once()
 
 
+def test_reward_uses_positive_quota_delta_when_usage_counter_resets():
+	before = _user_info(100, used=80)
+	after = _user_info(125, used=0)
+
+	assert actual_checkin._reward_amount(before, after) == 25
+
+
+def test_reward_is_not_confirmed_by_usage_counter_reset_alone():
+	before = _user_info(100, used=80)
+	after = _user_info(100, used=0)
+
+	assert actual_checkin._reward_amount(before, after) == 0
+
+
+def test_reward_rejects_non_finite_amounts():
+	assert actual_checkin._reward_amount(_user_info(float('nan')), _user_info(125)) is None
+	assert actual_checkin._reward_amount(_user_info(100), _user_info(float('inf'))) is None
+
+
 def test_overlay_does_not_treat_consumption_alone_as_reward(monkeypatch):
 	monkeypatch.setattr(actual_checkin.time, 'sleep', MagicMock())
 	before = _user_info(100, used=10)

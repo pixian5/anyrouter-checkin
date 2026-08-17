@@ -24,7 +24,11 @@ class NotificationKit:
 		self.gotify_url = os.getenv('GOTIFY_URL')
 		self.gotify_token = os.getenv('GOTIFY_TOKEN')
 		gotify_priority_env = os.getenv('GOTIFY_PRIORITY', '9')
-		self.gotify_priority = int(gotify_priority_env) if gotify_priority_env.strip() else 9
+		try:
+			self.gotify_priority = int(gotify_priority_env) if gotify_priority_env.strip() else 9
+		except ValueError:
+			print(f'[WARNING] Invalid GOTIFY_PRIORITY={gotify_priority_env!r}; using 9')
+			self.gotify_priority = 9
 		self.telegram_bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
 		self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
 		self.bark_key = os.getenv('BARK_KEY')
@@ -169,7 +173,7 @@ class NotificationKit:
 
 		self._post_json('Bark', url, data)
 
-	def push_message(self, title: str, content: str, msg_type: Literal['text', 'html'] = 'text'):
+	def push_message(self, title: str, content: str, msg_type: Literal['text', 'html'] = 'text') -> bool:
 		notifications = [
 			('Email', lambda: self.send_email(title, content, msg_type)),
 			('PushPlus', lambda: self.send_pushplus(title, content)),
@@ -182,12 +186,15 @@ class NotificationKit:
 			('Bark', lambda: self.send_bark(title, content)),
 		]
 
+		delivered = False
 		for name, func in notifications:
 			try:
 				func()
+				delivered = True
 				print(f'[{name}]: Message push successful!')
 			except Exception as e:
 				print(f'[{name}]: Message push failed! Reason: {str(e)}')
+		return delivered
 
 
 notify = NotificationKit()
