@@ -23,5 +23,6 @@ def test_installer_renders_current_clone_path_without_fixed_server_path(tmp_path
 	assert f'ExecStart={project_root}/.venv/bin/python -m pixian_overlay.runner' in service
 	assert 'Environment=TZ=Asia/Singapore' in service
 	assert '/opt/anyrouter-checkin' not in service
+	assert 'OnCalendar=*-*-* 08,14,20:00:00 Asia/Singapore' in timer
 	assert 'Unit=anyrouter-checkin.service' in timer
 	assert str(project_root) in result.stdout
