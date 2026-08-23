@@ -35,6 +35,7 @@ from pixian_overlay.utils.browser import (
 	navigate_login_page,
 	prepare_browser_page,
 	save_login_screenshot,
+	signed_fetch_in_page,
 	verify_browser_login,
 	wait_for_waf_ready,
 )
@@ -965,6 +966,201 @@ def format_check_in_notification(detail: dict, check_in_time: str | None = None)
 		return '\n'.join(lines)
 
 
+class _PageResponse:
+	"""把浏览器 fetch 结果包装成 parse_check_in_response 可读的轻量响应对象。"""
+
+	def __init__(self, status: int, payload: object | None) -> None:
+		self.status_code = status
+		self._payload = payload
+
+	def json(self):
+		return self._payload
+
+	@property
+	def text(self) -> str:
+		return json.dumps(self._payload, ensure_ascii=False) if self._payload is not None else ''
+
+
+def _user_info_from_fetch_result(fetched: dict | None) -> dict:
+	"""把浏览器 fetch 结果转成与 get_user_info 一致的 dict 结构。"""
+	if not fetched:
+		return {'success': False, 'error': 'Failed to get user info: no response'}
+	if fetched.get('error'):
+		return {'success': False, 'error': f"Failed to get user info: {fetched['error'][:50]}..."}
+	status = fetched.get('status')
+	payload = fetched.get('json')
+	if status != 200:
+		return {'success': False, 'error': f'Failed to get user info: HTTP {status}'}
+	if not isinstance(payload, dict) or not payload.get('success'):
+		return {'success': False, 'error': 'Failed to get user info: invalid data object'}
+	user_data = payload.get('data', {})
+	if not isinstance(user_data, dict):
+		return {'success': False, 'error': 'Failed to get user info: invalid data object'}
+	raw_quota = user_data.get('quota')
+	raw_used_quota = user_data.get('used_quota')
+	if not _is_finite_amount(raw_quota) or not _is_finite_amount(raw_used_quota):
+		return {'success': False, 'error': 'Failed to get user info: invalid quota values'}
+	quota = round(float(raw_quota) / 500000, 2)
+	used_quota = round(float(raw_used_quota) / 500000, 2)
+	return {
+		'success': True,
+		'quota': quota,
+		'used_quota': used_quota,
+		'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
+	}
+
+
+async def _fetch_user_info_in_page(page, extra_headers: dict, user_info_path: str, account_name: str) -> dict:
+	"""在浏览器页面内同源获取用户信息，复用浏览器 TLS 指纹。"""
+	try:
+		fetched = await signed_fetch_in_page(page, 'GET', user_info_path, extra_headers=extra_headers)
+		return _user_info_from_fetch_result(fetched)
+	except Exception as e:
+		return {'success': False, 'error': f'Failed to get user info: {str(e)[:50]}...'}
+
+
+async def _execute_check_in_in_page(
+	page,
+	account_name: str,
+	provider_config,
+	extra_headers: dict,
+) -> CheckInOutcome:
+	"""在浏览器页面内执行签到请求并返回三态结果。"""
+	print(f'[NETWORK] {account_name}: Executing check-in (in-browser fetch)')
+	sign_in_headers = dict(extra_headers)
+	sign_in_headers['Content-Type'] = 'application/json'
+	sign_in_headers['X-Requested-With'] = 'XMLHttpRequest'
+	fetched = await signed_fetch_in_page(
+		page, 'POST', provider_config.sign_in_path, json_body={}, extra_headers=sign_in_headers
+	)
+	if fetched is None:
+		print(f'[FAILED] {account_name}: Check-in failed - in-browser fetch unavailable')
+		return CheckInOutcome('failed', 'In-browser fetch failed')
+	if fetched.get('error'):
+		print(f'[FAILED] {account_name}: Check-in failed - {fetched["error"][:80]}')
+		return CheckInOutcome('failed', fetched['error'][:120])
+	status = fetched.get('status', 0)
+	payload = fetched.get('json')
+	print(f'[RESPONSE] {account_name}: Response status code {status}')
+	outcome = parse_check_in_response(_PageResponse(status, payload))
+	if outcome.status == 'success':
+		print(f'[SUCCESS] {account_name}: Check-in response confirmed success')
+	elif outcome.status == 'already_checked':
+		print(f'[INFO] {account_name}: Already checked in today')
+	else:
+		print(f'[FAILED] {account_name}: Check-in failed - {outcome.message}')
+	return outcome
+
+
+async def browser_check_in_requests(
+	all_cookies: dict,
+	account: AccountConfig,
+	account_name: str,
+	provider_config,
+	*,
+	skip_check_in: bool = False,
+) -> tuple[bool, dict | None, dict | None]:
+	"""用浏览器页面内的 `fetch` 执行签到，绕过 anyrouter.top 对 httpx TLS 指纹的拦截。
+
+	仅用于需要 WAF cookies 的 session cookie 账号。复用 `signed_fetch_in_page`
+	由浏览器内核发请求，从而携带浏览器 TLS/HTTP 指纹。
+	"""
+	from urllib.parse import urlsplit
+
+	if not all_cookies:
+		return False, None, None
+
+	domain = provider_config.domain
+	extra_headers: dict[str, str] = {}
+	if account.api_user:
+		extra_headers[provider_config.api_user_key] = account.api_user
+
+	print(f'[PROCESSING] {account_name}: Executing check-in via in-browser fetch')
+	settings = load_browser_login_settings(account_name, provider_config.name)
+	context = await launch_login_context(settings)
+	try:
+		netloc = urlsplit(domain).netloc
+		cookie_list = [
+			{'name': name, 'value': value, 'domain': netloc, 'path': '/'}
+			for name, value in (all_cookies or {}).items()
+			if isinstance(value, str)
+		]
+		if cookie_list:
+			await context.add_cookies(cookie_list)
+
+		page = context.pages[0] if context.pages else await context.new_page()
+		await prepare_browser_page(page)
+
+		# 同源导航到专属控制台页确立会话并刷新本会话 WAF cookies。
+		# 代理节点不稳定时重试，抓住偶发的可用窗口。
+		console_url = f'{domain}{provider_config.console_path}'
+		nav_error: Exception | None = None
+		for attempt in range(1, 5):
+			try:
+				await page.goto(console_url, wait_until='domcontentloaded', timeout=60_000)
+				await wait_for_waf_ready(page)
+				nav_error = None
+				break
+			except Exception as exc:  # nosec B112
+				nav_error = exc
+				print(f'[WARN] {account_name}: Browser goto {console_url} attempt {attempt}/4 failed ({exc!r:.100}); retrying...')
+				await asyncio.sleep(8)
+		if nav_error is not None:
+			raise nav_error
+
+		user_info_before = await _fetch_user_info_in_page(
+			page, extra_headers, provider_config.user_info_path, account_name
+		)
+		if user_info_before and user_info_before.get('success'):
+			print(user_info_before['display'])
+		elif user_info_before:
+			print(user_info_before.get('error', 'Unknown error'))
+
+		if provider_config.needs_manual_check_in() and not skip_check_in:
+			check_in_outcome = await _execute_check_in_in_page(
+				page, account_name, provider_config, extra_headers
+			)
+			user_info_after = await _fetch_user_info_in_page(
+				page, extra_headers, provider_config.user_info_path, account_name
+			)
+			if check_in_outcome.handled and not (user_info_after and user_info_after.get('success')):
+				print(f'[WARN] {account_name}: Check-in confirmed but post-check-in balance query failed')
+				balance_fallback = (
+					user_info_before if user_info_before and user_info_before.get('success') else user_info_after
+				)
+				return True, user_info_before, _annotate_check_in_status(balance_fallback, check_in_outcome.status)
+			return (
+				check_in_outcome.handled,
+				user_info_before,
+				_annotate_check_in_status(user_info_after, check_in_outcome.status),
+			)
+
+		if skip_check_in:
+			return (
+				bool(user_info_before and user_info_before.get('success')),
+				user_info_before,
+				_annotate_check_in_status(user_info_before, 'already_checked'),
+			)
+
+		user_info_after = await _fetch_user_info_in_page(
+			page, extra_headers, provider_config.user_info_path, account_name
+		)
+		if user_info_after and user_info_after.get('success'):
+			print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
+			return True, user_info_before, _annotate_check_in_status(user_info_after, 'success')
+		error = user_info_after.get('error', 'Unknown error') if user_info_after else 'Unknown error'
+		print(f'[FAILED] {account_name}: Auto check-in failed - {error}')
+		return False, user_info_before, user_info_after
+	except Exception as e:
+		print(f'[FAILED] {account_name}: Browser check-in failed - {str(e)[:80]}...')
+		return False, None, None
+	finally:
+		try:
+			await context.close()
+		except Exception:  # nosec B110
+			pass
+
+
 async def check_in_account(
 	account: AccountConfig, account_index: int, app_config: AppConfig, *, skip_check_in: bool = False
 ):
@@ -1011,9 +1207,28 @@ async def check_in_account(
 		auth_method = 'session cookies'
 
 	if not all_cookies:
-		return False, None, None
+		# 需要浏览器内签到（自刷新 WAF）的 session 账号，允许缺 WAF cookies 时回退
+		if auth_method == 'session cookies' and provider_config.needs_waf_cookies():
+			print(
+				f'[WARN] {account_name}: WAF cookie fetch incomplete; '
+				f'falling back to in-browser check-in (browser refreshes WAF cookies itself)'
+			)
+			all_cookies = dict(user_cookies)
+		else:
+			return False, None, None
 
 	print(f'[AUTH] {account_name}: Using auth method -> {auth_method}')
+
+	# WAF 平台的 session cookie 账号，改用浏览器页面内 fetch 执行签到，
+	# 复用浏览器 TLS/HTTP 指纹，绕过其拦截第三方 HTTP 客户端（httpx）的问题。
+	if auth_method == 'session cookies' and provider_config.needs_waf_cookies():
+		return await browser_check_in_requests(
+			all_cookies,
+			account,
+			account_name,
+			provider_config,
+			skip_check_in=skip_check_in,
+		)
 
 	return run_check_in_requests(
 		all_cookies,

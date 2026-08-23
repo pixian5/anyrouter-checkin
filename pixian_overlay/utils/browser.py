@@ -1550,3 +1550,53 @@ async def login_with_email_form(
 
 	# After all rounds, ensure we wait for login state (cookie set / redirect to console)
 	await wait_for_logged_in(page, SESSION_WAIT_TIMEOUT_MS)
+
+
+async def signed_fetch_in_page(
+	page: Page,
+	method: str,
+	path: str,
+	*,
+	json_body: object | None = None,
+	extra_headers: dict[str, str] | None = None,
+) -> dict | None:
+	"""在页面同源上下文内用浏览器内置 `fetch` 发出同源请求。
+
+	关键：请求由浏览器内核发出，携带浏览器 TLS/HTTP 指纹，可绕过
+	第三方 HTTP 客户端（非浏览器内核 HTTP 栈）被站点按 TLS 指纹（如 anyrouter.top）拦截的问题。
+
+	返回:
+		- 正常: {"status": int, "ok": bool, "json": object | null}
+		- 页面内网络异常: {"error": str}
+		- evaluate 异常: None
+	"""
+	try:
+		return await page.evaluate(
+			r"""async ({method, path, body, headers}) => {
+				try {
+					const opts = {
+						method,
+						credentials: 'include',
+						redirect: 'follow',
+						headers: Object.assign(
+							{'Accept': 'application/json, text/plain, */*', 'X-Requested-With': 'XMLHttpRequest'},
+							headers || {}
+						),
+					};
+					if (body !== undefined && body !== null) {
+						opts.headers['Content-Type'] = 'application/json';
+						opts.body = JSON.stringify(body);
+					}
+					const r = await fetch(path, opts);
+					let j = null;
+					try { j = await r.json(); } catch (_) {}
+					return {status: r.status, ok: r.ok, json: j};
+				} catch (e) {
+					return {error: String((e && e.message) || e)};
+				}
+			}""",
+			{'method': method, 'path': path, 'body': json_body, 'headers': extra_headers},
+		)
+	except Exception as e:  # nosec B110
+		debug_print(f'[WARN] signed_fetch_in_page failed for {method} {path}: {e!r:.160}')
+		return None
