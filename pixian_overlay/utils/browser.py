@@ -467,23 +467,30 @@ async def _parse_user_self_response(response: Any, user_info_path: str) -> dict 
 	return _extract_user_profile(payload)
 
 
-async def _fetch_user_profile_in_page(page: Page, user_info_path: str) -> dict | None:
+async def _fetch_user_profile_in_page(
+	page: Page, user_info_path: str, extra_headers: dict[str, str] | None = None
+) -> dict | None:
 	"""使用已登录页面的同源会话主动读取用户资料。"""
 	try:
+		headers = {'Accept': 'application/json, text/plain, */*'}
+		if extra_headers:
+			headers.update(extra_headers)
 		payload = await page.evaluate(
-			"""async (path) => {
-				try {
-					const response = await fetch(path, {
-						credentials: 'include',
-						headers: {Accept: 'application/json, text/plain, */*'},
-					});
-					if (!response.ok) return null;
-					return await response.json();
-				} catch (_) {
-					return null;
-				}
+			"""(args) => {
+				return (async () => {
+					try {
+						const response = await fetch(args.path, {
+							credentials: 'include',
+							headers: args.headers,
+						});
+						if (!response.ok) return null;
+						return await response.json();
+					} catch (_) {
+						return null;
+					}
+				})();
 			}""",
-			user_info_path,
+			{'path': user_info_path, 'headers': headers},
 		)
 	except Exception as e:  # nosec B110
 		debug_print(f'[WARN] Browser-side user profile fetch failed: {e!r:.160}')
@@ -605,6 +612,7 @@ async def verify_browser_login(
 	timeout_ms: int = DEFAULT_TIMEOUT_MS,
 	*,
 	user_info_path: str = '/api/user/self',
+	extra_headers: dict[str, str] | None = None,
 ) -> dict | None:
 	"""跳转控制台并拦截用户信息接口，用浏览器会话确认登录用户。"""
 	verify_timeout = min(timeout_ms, SESSION_WAIT_TIMEOUT_MS)
@@ -660,7 +668,7 @@ async def verify_browser_login(
 
 		verify_deadline = time.monotonic() + verify_timeout / 1000
 		while captured_profile is None:
-			fetched_profile = await _fetch_user_profile_in_page(page, user_info_path)
+			fetched_profile = await _fetch_user_profile_in_page(page, user_info_path, extra_headers)
 			if captured_profile is None and fetched_profile:
 				captured_profile = fetched_profile
 				verified.set()

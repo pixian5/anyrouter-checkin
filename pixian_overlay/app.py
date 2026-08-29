@@ -651,6 +651,8 @@ async def login_with_credentials(
 	provider_name: str,
 	email: str,
 	password: str,
+	*,
+	api_user: str | None = None,
 ) -> BrowserLoginResult | None:
 	"""使用邮箱密码通过浏览器登录，返回 cookies 与拦截到的 api user id。"""
 	print(f'[PROCESSING] {account_name}: Logging in with email/password...')
@@ -703,8 +705,15 @@ async def login_with_credentials(
 			print(f'[INFO] {account_name}: Browser profile already logged in')
 
 		console_url = f'{provider_config.domain}{provider_config.console_path}'
+		verify_headers = None
+		if api_user:
+			verify_headers = {provider_config.api_user_key: api_user}
 		user_profile = await verify_browser_login(
-			page, console_url, timeout_ms, user_info_path=provider_config.user_info_path
+			page,
+			console_url,
+			timeout_ms,
+			user_info_path=provider_config.user_info_path,
+			extra_headers=verify_headers,
 		)
 		if not user_profile:
 			cookies = await context.cookies()
@@ -1190,6 +1199,7 @@ async def check_in_account(
 			account.provider,
 			account.email,
 			account.password,
+			api_user=account.api_user,
 		)
 		if login_result:
 			all_cookies = login_result.cookies
