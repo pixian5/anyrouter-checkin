@@ -1,0 +1,9 @@
+name: runner-probe
+on:
+  push:
+    branches: [ main ]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "runner-ok $(cat /proc/cpuinfo | grep -m1 'model name' || uname -m) $(uname -m)"
