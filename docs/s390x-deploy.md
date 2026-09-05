@@ -8,6 +8,13 @@
 - s390x（IBM Z 大型机）**无可用浏览器引擎**：Playwright / curl_cffi 都没有 s390x 预编译轮子，`js2py` 在 Python 3.12 上已损坏（`KeyError: 3`）。
 - 服务器有 **Node.js v18**，可执行 anyrouter 的 WAF 混淆 JS 解出 `acw_sc__v2`。
 
+## 数据存储(每日余额存档)
+
+- 每次签到把余额/累计消耗写入 SQLite 审计库 `checkin_history.sqlite3`(表 `checkin_history`,按 account_key+id 索引)。
+- 依据最近一次成功记录计算「相对上次记录的余额变化」。
+- 余额原始单位→美元换算：`$ = quota / 500000`(500000 单位 = $1)。
+- 首次运行无基线，通知显示「当前余额」；次日运行即有「签到前/签到后」与余额变化。
+
 ## 新脚本
 
 - `scripts/s390x_checkin.py` —— 唯一入口，无需浏览器。
