@@ -11,7 +11,7 @@ s390x/server 纯 HTTP 统一签到脚本。
      并据此计算相对上次记录的余额变化。
 
 配置：从 .env 读取（ANYROUTER_ACCOUNTS / BARK_SERVER / BARK_KEY）
-版本：0.4.5
+版本：0.4.6
 """
 
 import asyncio
@@ -149,33 +149,71 @@ def usd(q):
     return f / QUOTA_TO_USD if f else 0.0
 
 
-# ---------- anyrouter WAF 挑战求解 ----------
+# ---------- anyrouter WAF 挑战求解(browser shim via node vm) ----------
+# 通过 node 的 vm 模块提供完整浏览器全局环境，执行混淆挑战 JS 解出 acw_sc__v2。
+NODE_SOLVER = r"""
+const fs = require('fs'), vm = require('vm');
+const chall = fs.readFileSync('/tmp/acw_chal.js', 'utf8');
+const noop = () => {};
+let cookies = {};
+const locEl = { style:{}, getAttribute:()=>null, setAttribute:noop };
+const loc = { href:'https://anyrouter.top/login', host:'anyrouter.top', hostname:'anyrouter.top',
+  pathname:'/login', protocol:'https:', origin:'https://anyrouter.top', reload:noop, replace:noop, assign:noop };
+const doc = {
+  get cookie(){ return Object.keys(cookies).map(k=>k+'='+cookies[k]).join('; '); },
+  set cookie(v){ const m = v.match(/^\s*([^=;]+)=([^;]*)/); if(m) cookies[m[1].trim()] = m[2].trim(); },
+  location: loc, documentElement: locEl, head:{appendChild:noop}, body:{appendChild:noop},
+  write:noop, writeln:noop, createElement:()=>({style:{},setAttribute:noop,appendChild:noop,removeChild:noop}),
+  createTextNode:()=>({}), getElementById:()=>null, getElementsByTagName:()=>[], querySelector:()=>null,
+  querySelectorAll:()=>[], addEventListener:noop, removeEventListener:noop, attachEvent:noop,
+  title:'', referrer:'', domain:'anyrouter.top', readyState:'complete', hidden:false, visibilityState:'visible',
+  defaultView: null,
+};
+const nav = { userAgent:"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36",
+  platform:'Linux x86_64', language:'zh-CN', languages:['zh-CN','zh'], cookieEnabled:true, onLine:true,
+  webdriver:false, hardwareConcurrency:8, deviceMemory:8, maxTouchPoints:0, vendor:'Google Inc.' };
+const scr = { width:1920,height:1080,availWidth:1920,availHeight:1040,colorDepth:24,pixelDepth:24,orientation:{type:'landscape-primary'} };
+const sandbox = {
+  document:doc, navigator:nav, location:loc, screen:scr,
+  performance:{ now:()=>Date.now(), timing:{navigationStart:Date.now()-5000} },
+  history:{length:1}, frames:null, length:0,
+  setTimeout, setInterval, clearTimeout, clearInterval,
+  addEventListener:noop, removeEventListener:noop, attachEvent:noop,
+  fetch:noop, XMLHttpRequest:function(){}, WebSocket:function(){},
+  getComputedStyle:()=>({}), matchMedia:()=>({matches:false,addEventListener:noop}),
+  requestAnimationFrame:noop, cancelAnimationFrame:noop,
+  localStorage:{getItem:()=>null,setItem:noop,removeItem:noop},
+  sessionStorage:{getItem:()=>null,setItem:noop,removeItem:noop},
+  btoa:s=>Buffer.from(s,'binary').toString('base64'), atob:s=>Buffer.from(s,'base64').toString('binary'),
+  prompt:()=>null, alert:noop, confirm:()=>true, print:noop,
+};
+sandbox.window=sandbox; sandbox.self=sandbox; sandbox.top=sandbox; sandbox.parent=sandbox;
+sandbox.globalThis=sandbox; sandbox.frames=sandbox; doc.defaultView=sandbox;
+const ctx = vm.createContext(sandbox);
+try { vm.runInContext(chall, ctx, {filename:'chall.js'}); } catch(e) {}
+console.log(JSON.stringify(cookies));
+"""
+
+
 def solve_acw(body: str) -> str | None:
     m = re.search(r'<script[^>]*>(.*?)</script>', body, re.S)
     if not m:
         return None
-    Path('/tmp/acw.js').write_text(m.group(1), encoding='utf-8')
-    runner = (
-        'var _c="";'
-        'var document={};'
-        'Object.defineProperty(document,"cookie",{get:function(){return _c;},'
-        'set:function(v){if(v&&v.indexOf("acw_sc__v2")!==-1)_c=v;}});'
-        'var __s=require("fs").readFileSync("/tmp/acw.js","utf8");eval(__s);'
-        'console.log(_c);'
-    )
-    script = Path('/tmp/acw_run.js')
-    script.write_text(runner, encoding='utf-8')
+    Path('/tmp/acw_chal.js').write_text(m.group(1), encoding='utf-8')
+    Path('/tmp/acw_solver.js').write_text(NODE_SOLVER, encoding='utf-8')
     try:
-        p = subprocess.run(['node', str(script)], capture_output=True, text=True, timeout=40)
+        p = subprocess.run(['node', '/tmp/acw_solver.js'], capture_output=True, text=True, timeout=40)
     except Exception as e:  # noqa: BLE001
         print(f'  [WAF-SOLVE-ERROR] node 执行失败: {type(e).__name__} {e}')
         return None
-    out = (p.stdout or '') + '\n' + (p.stderr or '')
-    m2 = re.search(r'acw_sc__v2=([^;]+)', out)
-    if not m2:
-        print(f'  [WAF-SOLVE-FAIL] node stdout={p.stdout[:150]!r}')
+    try:
+        data = json.loads(p.stdout.strip().splitlines()[-1])
+        val = data.get('acw_sc__v2')
+        return val if val else None
+    except Exception as e:  # noqa: BLE001
+        print(f'  [WAF-SOLVE-FAIL] 无法解析 node 输出: {type(e).__name__} '
+              f'stdout={p.stdout[:120]!r} stderr={p.stderr[:120]!r}')
         return None
-    return m2.group(1).strip()
 
 
 # ---------- 单账号签到 ----------

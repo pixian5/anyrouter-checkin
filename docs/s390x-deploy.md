@@ -8,6 +8,12 @@
 - s390x（IBM Z 大型机）**无可用浏览器引擎**：Playwright / curl_cffi 都没有 s390x 预编译轮子，`js2py` 在 Python 3.12 上已损坏（`KeyError: 3`）。
 - 服务器有 **Node.js v18**，可执行 anyrouter 的 WAF 混淆 JS 解出 `acw_sc__v2`。
 
+### anyrouter WAF 解算(node vm)
+
+- challenge 为腾讯系混淆指纹引擎，明文 Node 无法直接解出。
+- 用 Node `vm.createContext` 注入完整浏览器全局(document/navigator/screen/location…)，`runInContext` 执行混淆 JS，从 `document.cookie` 读出真实 `acw_sc__v2`。
+- 早期用正则抓 `acw_sc__v2=([^;]+)` 抓到的是表达式残片（`+v+L(0x120)+new Dat…`）系假 cookie，务必用 vm 完整求解。
+
 ## 数据存储(每日余额存档)
 
 - 每次签到把余额/累计消耗写入 SQLite 审计库 `checkin_history.sqlite3`(表 `checkin_history`,按 account_key+id 索引)。
