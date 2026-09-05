@@ -13,10 +13,6 @@ on:
 jobs:
   checkin:
     runs-on: ubuntu-latest
-    environment: production
-    concurrency:
-      group: anyrouter-checkin
-      cancel-in-progress: false
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: 1
