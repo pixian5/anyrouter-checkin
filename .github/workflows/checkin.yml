@@ -14,6 +14,9 @@ jobs:
   checkin:
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: anyrouter-checkin
+      cancel-in-progress: false
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: 1
@@ -43,11 +46,17 @@ jobs:
         uv sync --frozen
         echo "✅ 环境初始化完成"
 
-    - name: 安装系统依赖
+    - name: 安装 Chromium 系统依赖与字体
       run: |
         sudo apt-get update
-        sudo apt-get install -y xvfb fonts-noto-color-emoji fonts-freefont-ttf fonts-unifont \
-          fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf
+        sudo apt-get install -y \
+          libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+          libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+          libgbm1 libasound2 libpango-1.0-0 libcairo2 libatspi2.0-0 libx11-xcb1 \
+          libxcb1 libgtk-3-0 libdbus-1-3 libexpat1 \
+          fonts-noto-color-emoji fonts-freefont-ttf fonts-unifont \
+          fonts-ipafont-gothic fonts-wqy-zenhei
+        echo "✅ 系统依赖安装完成"
 
     - name: 缓存 CloakBrowser 二进制
       uses: actions/cache@v5
@@ -63,15 +72,6 @@ jobs:
         uv run python -m cloakbrowser install
         echo "✅ CloakBrowser 安装完成"
 
-    - name: 恢复余额历史缓存
-      uses: actions/cache@v5
-      with:
-        path: balance_hash.txt
-        key: balance-hash-${{ github.ref_name }}-${{ github.run_id }}
-        restore-keys: |
-          balance-hash-${{ github.ref_name }}-
-          balance-hash-
-
     - name: 恢复浏览器 Profile 缓存
       uses: actions/cache@v5
       with:
@@ -80,41 +80,15 @@ jobs:
         restore-keys: |
           browser-profiles-${{ runner.os }}-
 
-    - name: 配置代理
-      env:
-        PROXY_SUBSCRIPTION_URL: ${{ secrets.PROXY_SUBSCRIPTION_URL }}
-        PROXY_TEST_URL: https://www.google.com/generate_204
-        MIHOMO_VERSION: v1.19.27
-        PROXY_REQUIRED: false
-      run: bash scripts/setup_mihomo_proxy.sh
-
-    - name: 执行签到
+    - name: 执行签到（pixian_overlay 浏览器签到）
       env:
         DEBUG_MODE: ${{ env.DEBUG_MODE }}
-        CHECKIN_HEADLESS: false
-        CHECKIN_HUMANIZE: true
-        CHECKIN_WAIT_TIMEOUT_MS: 120000
         ANYROUTER_ACCOUNTS: ${{ secrets.ANYROUTER_ACCOUNTS }}
         PROVIDERS: ${{ secrets.PROVIDERS }}
-        DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
-        EMAIL_USER: ${{ secrets.EMAIL_USER }}
-        EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-        EMAIL_TO: ${{ secrets.EMAIL_TO }}
-        EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-        CUSTOM_SMTP_SERVER: ${{ secrets.CUSTOM_SMTP_SERVER }}
-        PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        SERVERPUSHKEY: ${{ secrets.SERVERPUSHKEY }}
-        FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-        WEIXIN_WEBHOOK: ${{ secrets.WEIXIN_WEBHOOK }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        GOTIFY_URL: ${{ secrets.GOTIFY_URL }}
-        GOTIFY_TOKEN: ${{ secrets.GOTIFY_TOKEN }}
-        GOTIFY_PRIORITY: ${{ secrets.GOTIFY_PRIORITY }}
         BARK_KEY: ${{ secrets.BARK_KEY }}
         BARK_SERVER: ${{ secrets.BARK_SERVER }}
       run: |
-        xvfb-run -a --server-args="-screen 0 1920x1080x24" uv run checkin.py
+        uv run python -m pixian_overlay.runner
 
     - name: 上传调试截图
       if: always() && env.DEBUG_MODE == 'true'
@@ -128,10 +102,6 @@ jobs:
         if-no-files-found: warn
         include-hidden-files: true
         retention-days: 14
-
-    - name: 停止代理
-      if: always()
-      run: bash scripts/stop_mihomo_proxy.sh
 
     - name: 执行结果
       if: always()
