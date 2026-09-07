@@ -1,0 +1,30 @@
+name: Deploy to l.sbbz.tech (s390x)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_DEPLOY_KEY }}
+          port: 22
+          ssh_options: -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          script: |
+            set -e
+            cd /opt/anyrouter-checkin
+            git fetch origin
+            git reset --hard origin/main
+            ./venv/bin/pip install -q "httpx[http2]"
+            sudo systemctl start anyrouter-checkin.timer
+            sudo systemctl restart anyrouter-checkin.service
+            echo "DEPLOY_OK $(git rev-parse --short HEAD)"

@@ -11,7 +11,7 @@ s390x/server 纯 HTTP 统一签到脚本。
      并据此计算相对上次记录的余额变化。
 
 配置：从 .env 读取（ANYROUTER_ACCOUNTS / BARK_SERVER / BARK_KEY）
-版本：0.4.6
+版本：0.4.7
 """
 
 import asyncio
