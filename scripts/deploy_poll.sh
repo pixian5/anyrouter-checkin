@@ -3,7 +3,7 @@
 # 用法: 系统定时器每分钟调用；有新 commit 则拉取并重启签到服务。
 set -u
 REPO_DIR=/opt/anyrouter-checkin
-LOG=/var/log/anyrouter_deploy.log
+LOG=/opt/anyrouter-checkin/deploy.log
 
 cd "$REPO_DIR" || { echo "$(date '+%F %T') repo-missing" >>"$LOG"; exit 0; }
 

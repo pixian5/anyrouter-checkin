@@ -16,5 +16,6 @@ checkin_screenshots
 # 含明文密码/会话的本地 s390x 测试脚本，勿提交
 scripts/s390x_test_agentrouter.py
 scripts/s390x_test_anyrouter.py
+deploy.log
 
 .DS_Store
