@@ -41,13 +41,25 @@
 - 查看：`systemctl list-timers anyrouter-checkin.timer`
 - 手动跑一次：`sudo systemctl start anyrouter-checkin.service`；日志 `sudo journalctl -u anyrouter-checkin.service -n 20`
 
-## 已验证（2026-09-06）
+## 自动部署（不用 GH Actions）
 
-- 两账号（hqlak47 id=313043、g_sbbz id=257232）均签到成功，余额正常
-- Bark 推送 status=200，标题「✅ 签到全部成功 (2/2)」
-- 退出码 0
+- **GitHub Actions 在此账号/仓库不派发 runner**（所有 run 永久 `queued`，账号级问题，无法修复），故不要依赖 GH Actions 自动部署。
+- 改为**服务器端 git 轮询自动部署**：
+  - `scripts/deploy_poll.sh`（systemd 定时器 `anyrouter-deploy.timer` 每 5 分钟跑一次）：`git fetch` → 检测到新 commit → `git reset --hard` + 装依赖 → 重启 `anyrouter-checkin.service`。
+  - 实现「本地改 → push → 服务器自动拉取部署」闭环，log 写到 `/opt/anyrouter-checkin/deploy.log`。
+  - 手动立即触发：`sudo systemctl start anyrouter-deploy.service`。
+  - GitHub 侧仍保留 `deploy.yml`，若日后 runner 恢复可直接复用。
+- 部署用专用 ed25519 私钥（GitHub secret `SSH_DEPLOY_KEY`）+ 部署公钥已加入 `linux1` 的 `authorized_keys`；`/etc/sudoers.d/anyrouter-deploy` 允许对签到服务免密 systemctl。
+
+## 已复位（2026-09-07 新服务器全新部署）
+
+- l.sbbz.tech 主机曾在 09-06→09-07 间被重置（宿主密钥改变 / `/opt` 为空），已在该新机上重装：
+  - node v18 + python3-venv + git，克隆仓库，venv 装 httpx，恢复 `.env`，配置 systemd。
+- 3 账号签到全部成功：agentrouter hqlak47/g_sbbz 余额 $1025（+$25/天），anyrouter 85976 余额 $7501.30。
+- 已知缺陷（已修）：同日重复运行的跳过账号曾因 `balance_change` 未初始化抛 KeyError；现跳过显示 `[SKIP]`，退出码仅真实失败才非零。
 
 ## 注意事项
 
 - 若续接 anyrouter 账号，需在 `.env` 加 `session` cookie（签到走 session，非邮箱密码）。
-- 修改脚本后需同步并 `sudo systemctl daemon-reload`（改 service 时）。
+- 修改脚本后 push 即可触发服务器自动部署（轮询 ≤5 分钟）；改 systemd unit 需手动 `daemon-reload`。
+- 首次运行（无历史基线）通知显示「当前余额」，次日即有「签到前/后 + 余额变化」。
