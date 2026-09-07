@@ -11,7 +11,7 @@ s390x/server 纯 HTTP 统一签到脚本。
      并据此计算相对上次记录的余额变化。
 
 配置：从 .env 读取（ANYROUTER_ACCOUNTS / BARK_SERVER / BARK_KEY）
-版本：0.4.9
+版本：0.5.0
 """
 
 import asyncio
@@ -395,7 +395,9 @@ def format_account_block(detail: dict, check_in_time: str) -> str:
     name = detail.get('name') or detail.get('api_user') or ''
     t = f' @ {check_in_time}' if check_in_time else ''
     sep = '  ━━━━━━━━━━━━━━━━━━━━'
-    if not detail.get('success'):
+
+    # 真实失败(非跳过) → FAIL
+    if not detail.get('success') and not detail.get('skipped'):
         error = detail.get('message') or '未知错误'
         return f'{name}\n[FAIL]{t}\n{sep}\n  ❌ 签到失败\n  📝 错误: {error}\n{sep}'
 
@@ -608,10 +610,12 @@ def main() -> int:
     else:
         print('[INFO] 无结果，跳过通知')
 
-    all_handled = success == total and not any(
-        d.get('skipped', False) and not d.get('success', False) for d in details.values()
+    # 退出码：仅当存在「真实失败」(非跳过、非成功)才返回非零，
+    # 已签到跳过也视为本次已正常处理。
+    genuine_fail = sum(
+        1 for d in details.values() if not d.get('success', False) and not d.get('skipped', False)
     )
-    return 0 if all_handled else 1
+    return 0 if genuine_fail == 0 else 1
 
 
 if __name__ == '__main__':
