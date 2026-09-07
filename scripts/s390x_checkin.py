@@ -11,7 +11,7 @@ s390x/server 纯 HTTP 统一签到脚本。
      并据此计算相对上次记录的余额变化。
 
 配置：从 .env 读取（ANYROUTER_ACCOUNTS / BARK_SERVER / BARK_KEY）
-版本：0.4.8
+版本：0.4.9
 """
 
 import asyncio
@@ -372,9 +372,10 @@ async def http_checkin_anyrouter(client, acc: dict, cfg: dict, baseline, skip_si
         model['baseline_balance_change'] = float(after_q) - baseline[0]
     if model['skipped']:
         model['success'] = False  # 跳过不算成功(用于统计成功数)
-        if after_q is not None and baseline is not None:
-            if model['balance_change'] == 0:
-                model['baseline_balance_change'] = float(after_q) - baseline[0]
+        if model.get('balance_change') in (None, 0) and after_q is not None and baseline is not None:
+            model['baseline_balance_change'] = float(after_q) - baseline[0]
+    model.setdefault('balance_change', 0.0)
+    model.setdefault('check_in_reward', 0.0)
     return model
 
 
