@@ -41,15 +41,15 @@
 - 查看：`systemctl list-timers anyrouter-checkin.timer`
 - 手动跑一次：`sudo systemctl start anyrouter-checkin.service`；日志 `sudo journalctl -u anyrouter-checkin.service -n 20`
 
-## 自动部署（不用 GH Actions）
+## 自动部署
 
-- **GitHub Actions 在此账号/仓库不派发 runner**（所有 run 永久 `queued`，账号级问题，无法修复），故不要依赖 GH Actions 自动部署。
-- 改为**服务器端 git 轮询自动部署**：
-  - `scripts/deploy_poll.sh`（systemd 定时器 `anyrouter-deploy.timer` 每 5 分钟跑一次）：`git fetch` → 检测到新 commit → `git reset --hard` + 装依赖 → 重启 `anyrouter-checkin.service`。
-  - 实现「本地改 → push → 服务器自动拉取部署」闭环，log 写到 `/opt/anyrouter-checkin/deploy.log`。
-  - 手动立即触发：`sudo systemctl start anyrouter-deploy.service`。
-  - GitHub 侧仍保留 `deploy.yml`，若日后 runner 恢复可直接复用。
-- 部署用专用 ed25519 私钥（GitHub secret `SSH_DEPLOY_KEY`）+ 部署公钥已加入 `linux1` 的 `authorized_keys`；`/etc/sudoers.d/anyrouter-deploy` 允许对签到服务免密 systemctl。
+**2026-09-08 根因澄清**：GitHub Actions 卡 `queued` 的根因是**该仓库的 Actions 功能被关闭**（`GET /repos/{owner}/{repo}/actions/permissions` 返回 `enabled:false`，非账号级限制，也不是 runner 不派发）。已通过 `gh api .../actions/permissions -X PUT -F enabled=true -f allowed_actions=all` 重新启用，之后所有 workflow 正常派发并 `success`。
+
+- GitHub Actions：`.github/workflows/deploy.yml`，`on: push` 到 `main` → SSH 到服务器 `git reset --hard` + 装依赖 + 重启签到服务。已实测 `conclusion: success`。
+- 服务器端 git 轮询（备用，防 GH Actions 故障）：`scripts/deploy_poll.sh` + `anyrouter-deploy.timer` 每 5 分钟 `git fetch`，检测到新 commit 即拉取+重启，log 写 `/opt/anyrouter-checkin/deploy.log`。手动立即触发 `sudo systemctl start anyrouter-deploy.service`。
+- 部署用专用 ed25519 私钥（GitHub secret `SSH_DEPLOY_KEY`）+ 公钥加入 `linux1.authorized_keys`；`/etc/sudoers.d/anyrouter-deploy` 允许对签到服务免密 systemctl。
+
+**遗留事项**：启用 Actions 前遗留的几个 `AnyRouter 自动签到`（checkin.yml 旧浏览器流程）run 处于坏掉态，`gh run cancel` 报"completed"无法取消，无害，会自然淡出。
 
 ## 已复位（2026-09-07 新服务器全新部署）
 
