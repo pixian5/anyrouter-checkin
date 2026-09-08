@@ -10,8 +10,8 @@ s390x/server 纯 HTTP 统一签到脚本。
 数据：每次签到把余额/累计消耗写入 SQLite 审计库(checkin_history.sqlite3)，
      并据此计算相对上次记录的余额变化。
 
-配置：从 .env 读取（ANYROUTER_ACCOUNTS / BARK_SERVER / BARK_KEY）
-版本：0.5.1
+配置：从 .env 读取（ACCOUNT_1..ACCOUNT_N 账号 / BARK_SERVER / BARK_KEY）
+版本：0.5.2
 """
 
 import asyncio
@@ -574,17 +574,30 @@ def build_notification(details: dict, total: int, success: int, now_str) -> tupl
 
 def main() -> int:
     env = load_dotenv()
-    accounts_str = env.get('ANYROUTER_ACCOUNTS', '')
-    if not accounts_str:
-        print('[FAILED] ANYROUTER_ACCOUNTS 环境变量未配置')
-        return 1
-    try:
-        accounts = json.loads(accounts_str)
-    except json.JSONDecodeError as e:
-        print(f'[FAILED] ANYROUTER_ACCOUNTS JSON 解析失败: {e}')
-        return 1
-    if not isinstance(accounts, list) or not accounts:
-        print('[FAILED] ANYROUTER_ACCOUNTS 必须是非空数组')
+
+    # 账号配置：每个账号一行独立环境变量，ACCOUNT_1、ACCOUNT_2 ... 顺序编号
+    # 每个值为一个 JSON 对象，必带 provider("agentrouter"/"anyrouter")，
+    # 可选字段 name/email/password/api_user/session 等。
+    accounts: list[dict] = []
+    i = 1
+    while True:
+        raw = env.get(f'ACCOUNT_{i}', '')
+        if not raw:
+            break
+        try:
+            acc = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f'[FAILED] ACCOUNT_{i} JSON 解析失败: {e}')
+            return 1
+        if not isinstance(acc, dict) or not acc:
+            print(f'[FAILED] ACCOUNT_{i} 必须是非空 JSON 对象')
+            return 1
+        acc.setdefault('name', f'ACCOUNT_{i}')
+        accounts.append(acc)
+        i += 1
+
+    if not accounts:
+        print('[FAILED] 未配置任何账号（需要 ACCOUNT_N 环境变量，每个账号一行）')
         return 1
 
     print(f'[CONFIG] 共 {len(accounts)} 个账号')
