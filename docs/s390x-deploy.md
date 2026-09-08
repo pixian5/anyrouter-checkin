@@ -32,7 +32,28 @@
 
 - 路径：`/opt/anyrouter-checkin`（属主 `linux1`）
 - venv：`/opt/anyrouter-checkin/venv`，仅依赖 `httpx[http2]`
-- `.env`：**带密码，不入 git**，`chmod 600`；账号经 `ANYROUTER_ACCOUNTS`（含 `provider` 字段）配置
+- `.env`：**带密码，不入 git**，`chmod 600`；账号经 `ACCOUNT_1..ACCOUNT_N`（每账号一个独立变量，含 `provider` 字段）配置
+
+## 账号配置（ACCOUNT_N 格式）
+
+> （2026-09-08 重构）废弃单变量 `ANYROUTER_ACCOUNTS`（一个 JSON 数组塞全部账号）。改为**每个账号一个独立环境变量** `ACCOUNT_1`、`ACCOUNT_2`…，每个值是单个 JSON 对象，用 `provider` 区分平台。脚本顺序扫描 `ACCOUNT_1` 起，**遇到空缺即停止（不可跳号）**。
+
+```env
+ACCOUNT_1={"name":"主账号","provider":"agentrouter","email":"your@email.com","password":"xxx","api_user":"313043"}
+ACCOUNT_2={"name":"g_sbbz","provider":"agentrouter","email":"g@sbbz.tech","password":"xxx","api_user":"257232"}
+ACCOUNT_3={"name":"85976","provider":"anyrouter","session":"你的session","api_user":"85976"}
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `provider` | ✅ | `"agentrouter"` / `"anyrouter"`，决定走哪种签到协议 |
+| `name` | 可选 | 显示名，缺省用 `ACCOUNT_N` |
+| `email`+`password` | agentrouter | 账号邮箱/密码登录（登录后自动从 `data.id` 取 New-Api-User） |
+| `session` | anyrouter | Web session cookie 登录（续接 anyrouter 账号必须提供） |
+| `api_user` | 可选 | `New-Api-User` 头值，缺省登录后自动取 |
+
+- 单值必须是合法 JSON 对象，否则脚本直接报错退出。
+- 完整实例见仓库 `.env.example`。
 
 ## systemd 定时任务
 
@@ -57,6 +78,24 @@
   - node v18 + python3-venv + git，克隆仓库，venv 装 httpx，恢复 `.env`，配置 systemd。
 - 3 账号签到全部成功：agentrouter hqlak47/g_sbbz 余额 $1025（+$25/天），anyrouter 85976 余额 $7501.30。
 - 已知缺陷（已修）：同日重复运行的跳过账号曾因 `balance_change` 未初始化抛 KeyError；现跳过显示 `[SKIP]`，退出码仅真实失败才非零。
+
+## 服务器一键安装脚本（新机复现部署）
+
+> （2026-09-08）当再次换新服务器时，用 `scripts/install_server.sh` 一键复现整套部署，无需手工配置。
+
+- 作用：安装依赖（git/nodejs/python3-venv）→ 克隆仓库到 `/opt/anyrouter-checkin` → 建 venv 装 `httpx[http2]` → 写入签到 + 自动部署的 systemd 服务与定时器 → 启用定时器。
+- 用法（在服务器上，用 有 sudo 的用户执行）：
+
+  ```bash
+  # 方式A：下载脚本直接跑（需能访问 raw 链接）
+  bash <(curl -sL <该文件raw链接>)
+  # 方式B：本地脚本
+  sudo bash scripts/install_server.sh [仓库URL]
+  ```
+
+- 默认以当前 Linux 用户身份跑服务；仓库 URL 缺省为 `https://github.com/pixian5/anyrouter-checkin.git`。
+- **跑完后必须另放一份真实 `.env`**（含账号/密钥，`chmod 600`，见上文「账号配置（ACCOUNT_N 格式）」），然后 `sudo systemctl start anyrouter-checkin.service` 手动验证一次。
+- 装完即已启用 5 分钟自动部署轮询，此后本地 `git push` 即自动拉取重启。
 
 ## 注意事项
 
