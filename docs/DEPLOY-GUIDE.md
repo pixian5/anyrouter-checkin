@@ -8,6 +8,29 @@
 
 ---
 
+## 〇、给 AI 的起始指令（直接整段粘贴给任何 AI）
+
+> 请处理这个仓库 `anyrouter-checkin` 的账号每日自动签到任务。
+>
+> 第一步，先读本文件 `docs/DEPLOY-GUIDE.md` 了解完整机制，再按本文件从零动手。本文件是唯一权威，文档里没覆盖的情况再问我。
+>
+> 你要做的完整流程如下：
+>
+> 1. **克隆仓库**：
+>    ```bash
+>    git clone https://github.com/pixian5/anyrouter-checkin.git
+>    cd anyrouter-checkin
+>    ```
+> 2. **配置账号**：复制 `.env.example` 为 `.env`，按「账号配置（ACCOUNT_N 格式）」填入真实账号（每个账号一个 `ACCOUNT_N` 变量，含 provider/email+password 或 session）。`.env` 含密钥，不要提交 git。
+> 3. **准备依赖**：`python3 -m venv venv && ./venv/bin/pip install "httpx[http2]"`，确认有 node（anyrouter 解 WAF 用）。
+> 4. **手动跑通**：`./venv/bin/python scripts/s390x_checkin.py`，确认 3 个账号全部签到成功、日志显示余额/G奖励、Bark 收到一条「✅ 签到全部成功 (3/3)」。
+> 5. **部署到服务器**（若需要）：照「服务器部署」节，用 `scripts/install_server.sh` 一键部署，然后手动放置真实 `.env` 并 `sudo systemctl start anyrouter-checkin.service` 验证一次。
+> 6. **改代码后自动上线**：本地提交并 push 到 `main`，服务器经 GitHub Actions 或每 5 分钟的 git 轮询自动拉取并重启。改代码务必用 `scripts/s390x_checkin.py`，不要动仓库根目录旧的浏览器版 `checkin.py` / `pixian_overlay/*`。
+>
+> 请一步步执行并在每步完成后报告结果，遇到网络类 `ConnectError` 时先重跑确认（可能是本机 TUN 瞬态），不要误判。
+
+---
+
 ## 一、项目能做什么
 
 对一组**多平台账号**（agentrouter / anyrouter）每日自动「签到领余额」，并把结果合并成**一条** Bark 推送。
