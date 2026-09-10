@@ -102,3 +102,10 @@ ACCOUNT_3={"name":"85976","provider":"anyrouter","session":"你的session","api_
 - 若续接 anyrouter 账号，需在 `.env` 加 `session` cookie（签到走 session，非邮箱密码）。
 - 修改脚本后 push 即可触发服务器自动部署（轮询 ≤5 分钟）；改 systemd unit 需手动 `daemon-reload`。
 - 首次运行（无历史基线）通知显示「当前余额」，次日即有「签到前/后 + 余额变化」。
+
+## 本机（macOS + TUN）签到注意
+
+- 本机若开启了 **TUN 增强模式**（虚拟网卡接管流量），**刚开启时**直连 anyrouter.top 会瞬态 `ConnectError`（路由/fake-ip 未就绪），**等 TUN 稳定后同一条 httpx 直连即恢复正常返回 200**。
+- 遇到 `anyrouter... ConnectError` 优先重跑一次确认，**不要急着断定要加代理**：anyrouter.top 直连即可签到（httpx + 同款 UA 实测 200），无需 `use_proxy`。
+- 系统网络设置里可能残留一个 TUN/VPN 附带的本地转发口（如 `127.0.0.1:58964`，状态 Disabled），**那是 TUN 自带、非用户主动配置的代理，与签到无关，不要据此改脚本**。
+- 本机签到用 `./venv/bin/python scripts/s390x_checkin.py`（venv 内运行，依赖 node 解 WAF）。
