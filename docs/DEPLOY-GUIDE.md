@@ -43,6 +43,17 @@
 **当前唯一正式入口**：`scripts/s390x_checkin.py`（纯 HTTP，无浏览器）。
 仓库根目录的 `checkin.py`、`pixian_overlay/*` 是**已废弃的旧浏览器实现**，不要在部署中使用。
 
+### 平台 ↔ 域名对照表（务必分清，别搞混）
+
+三个域名非常相似，`provider` 与「所属平台」不是同一概念，**provider 的值才是代码使用的键**：
+
+| `provider` 值（.env 里写它） | 所属平台 | 站点域名 | 代码实际请求的域 |
+|---|---|---|---|
+| `agentrouter` | **AgentRouter** | agentrouter.org（主域，会触发 WAF 滑块，**勿用**） | **ps.air-outer.com**（备用域） |
+| `anyrouter` | **AnyRouter** | anyrouter.top | anyrouter.top |
+
+> ⚠️ 常见误解：其它 AI 看到 `agentrouter` 就去套 agentrouter.org，再误认为它是 anyrouter.top。**agentrouter.org 与 anyrouter.top 是两家不同平台**；代码里 agentrouter 恒走 ps.air-outer.com，anyrouter 恒走 anyrouter.top，二者独立、不混用。
+
 ---
 
 ## 二、配置（`.env`）
