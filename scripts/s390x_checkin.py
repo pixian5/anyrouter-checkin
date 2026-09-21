@@ -109,14 +109,6 @@ def last_balance(conn: sqlite3.Connection, account_key: str) -> tuple[float, flo
     return float(row[0]), float(row[1] or 0.0)
 
 
-def checked_in_today(conn: sqlite3.Connection, account_key: str, today: str) -> bool:
-    row = conn.execute(
-        'SELECT 1 FROM checkin_history WHERE account_key=? AND success=1 AND checkin_time LIKE ? LIMIT 1',
-        (account_key, f'{today}%'),
-    ).fetchone()
-    return row is not None
-
-
 def insert_history(conn: sqlite3.Connection, record: dict) -> None:
     conn.execute(
         """
@@ -204,14 +196,14 @@ def solve_acw(body: str) -> str | None:
     try:
         p = subprocess.run(['node', '/tmp/acw_solver.js'], capture_output=True, text=True, timeout=40)
     except Exception as e:  # noqa: BLE001
-        print(f'  [WAF-SOLVE-ERROR] node 执行失败: {type(e).__name__} {e}')
+        print(f'  [WAF 解 JS 出错] node 执行失败: {type(e).__name__} {e}')
         return None
     try:
         data = json.loads(p.stdout.strip().splitlines()[-1])
         val = data.get('acw_sc__v2')
         return val if val else None
     except Exception as e:  # noqa: BLE001
-        print(f'  [WAF-SOLVE-FAIL] 无法解析 node 输出: {type(e).__name__} '
+        print(f'  [WAF 解 JS 失败] 无法解析 node 输出: {type(e).__name__} '
               f'stdout={p.stdout[:120]!r} stderr={p.stderr[:120]!r}')
         return None
 
@@ -288,7 +280,7 @@ async def http_login_agentrouter(client, acc: dict, cfg: dict, baseline) -> dict
     return model
 
 
-async def http_checkin_anyrouter(client, acc: dict, cfg: dict, baseline, skip_signin: bool) -> dict:
+async def http_checkin_anyrouter(client, acc: dict, cfg: dict, baseline) -> dict:
     """anyrouter 解 WAF + session 签到。"""
     domain = cfg['domain']
     api_user = acc.get('api_user')
@@ -338,24 +330,20 @@ async def http_checkin_anyrouter(client, acc: dict, cfg: dict, baseline, skip_si
         return model
 
     before_q, before_u = await show_user()
-    if not skip_signin:
-        try:
-            sr = await client.post(f'{domain}/api/user/sign_in', headers=api_headers, timeout=25)
-            sdd = sr.json()
-        except Exception as e:  # noqa: BLE001
-            model['message'] = f'签到请求失败: {type(e).__name__}'
-            return model
-        msg = sdd.get('message', '') if isinstance(sdd, dict) else ''
-        success = bool(isinstance(sdd, dict) and sdd.get('success'))
-        if not success and any(k in (msg or '').lower() for k in ALREADY_CHECKED_KEYWORDS):
-            model['skipped'] = True
-            success = False
-        elif success:
-            model['success'] = True
-        else:
-            model['message'] = msg or '签到失败'
+    try:
+        sr = await client.post(f'{domain}/api/user/sign_in', headers=api_headers, timeout=25)
+        sdd = sr.json()
+    except Exception as e:  # noqa: BLE001
+        model['message'] = f'签到请求失败: {type(e).__name__}'
+        return model
+    msg = sdd.get('message', '') if isinstance(sdd, dict) else ''
+    success = bool(isinstance(sdd, dict) and sdd.get('success'))
+    if not success and any(k in (msg or '').lower() for k in ALREADY_CHECKED_KEYWORDS):
+        model['success'] = True
+    elif success:
+        model['success'] = True
     else:
-        model['skipped'] = True
+        model['message'] = msg or '签到失败'
 
     after_q, after_u = await show_user()
     model['before_quota'] = before_q
@@ -370,10 +358,6 @@ async def http_checkin_anyrouter(client, acc: dict, cfg: dict, baseline, skip_si
         model['check_in_reward'] = delta_run if delta_run > 0 else 0.0
     if after_q is not None and baseline is not None:
         model['baseline_balance_change'] = float(after_q) - baseline[0]
-    if model['skipped']:
-        model['success'] = False  # 跳过不算成功(用于统计成功数)
-        if model.get('balance_change') in (None, 0) and after_q is not None and baseline is not None:
-            model['baseline_balance_change'] = float(after_q) - baseline[0]
     model.setdefault('balance_change', 0.0)
     model.setdefault('check_in_reward', 0.0)
     return model
@@ -393,51 +377,50 @@ def display_name(acc: dict) -> str:
 # ---------- 单账号通知块(用户指定格式) ----------
 def format_account_block(detail: dict, check_in_time: str) -> str:
     name = detail.get('name') or detail.get('api_user') or ''
-    t = f' @ {check_in_time}' if check_in_time else ''
     sep = '  ━━━━━━━━━━━━━━━━━━━━'
-
-    # 真实失败(非跳过) → FAIL
-    if not detail.get('success') and not detail.get('skipped'):
-        error = detail.get('message') or '未知错误'
-        return f'{name}\n[FAIL]{t}\n{sep}\n  ❌ 签到失败\n  📝 错误: {error}\n{sep}'
-
-    tag = '[SKIP]' if detail.get('skipped') else '[CHECK-IN]'
-    bq = detail.get('before_quota')
-    bu = detail.get('before_used')
-    aq = detail.get('after_quota')
-    au = detail.get('after_used')
-
-    usd_bq, usd_aq = usd(bq), usd(aq)
-    if usd_aq is None:
-        return f'{name}\n{tag}{t}\n{sep}\n  📍 当前 💵 余额: 未知\n{sep}'
-
-    bu = 0.0 if bu is None else float(bu)
-    au = 0.0 if au is None else float(au)
-    lines = [
-        f'{name}',
-        f'{tag}{t}',
-        sep,
-        f'  📍 签到前 💵 余额: ${usd_bq:.2f}  |  📊 累计消耗: ${usd(bu):.2f}' if usd_bq is not None
-        else f'  📍 当前 💵 余额: ${usd_aq:.2f}  |  📊 累计消耗: ${usd(au):.2f}',
-    ]
-    if usd_bq is not None:
-        lines.append(f'  📍 签到后 💵 余额: ${usd_aq:.2f}  |  📊 累计消耗: ${usd(au):.2f}')
-    lines.append(sep)
 
     reward = detail.get('check_in_reward') or 0
     balance_change = detail.get('balance_change') or 0
     baseline_change = detail.get('baseline_balance_change') or 0
 
-    if not detail.get('skipped') and reward > 0:
-        lines.append(f'  🎁 签到获得: +${usd(reward):.2f}')
-    if not detail.get('skipped') and balance_change != 0:
-        sym = '+' if balance_change > 0 else ''
-        lines.append(f'  💹 余额变化: {sym}${usd(abs(balance_change)):.2f}')
-    elif baseline_change != 0:
-        sym = '+' if baseline_change > 0 else ''
-        lines.append(f'  📈 相比上次记录余额变化: {sym}${usd(abs(baseline_change)):.2f}')
+    statuses = []
+    if not detail.get('success'):
+        statuses.append('❌ 签到失败')
     else:
-        lines.append('  ℹ️ 今日已签到，无变化')
+        if reward > 0:
+            statuses.append(f'🎁 签到获得 +${usd(reward):.2f}')
+        if balance_change != 0:
+            sym = '+' if balance_change > 0 else ''
+            statuses.append(f'💹 余额变化 {sym}${usd(abs(balance_change)):.2f}')
+        elif baseline_change != 0:
+            sym = '+' if baseline_change > 0 else ''
+            statuses.append(f'📈 相比上次记录余额变化 {sym}${usd(abs(baseline_change)):.2f}')
+        if not statuses:
+            statuses.append('ℹ️ 本次已签到，余额无变化')
+
+    lines = [f'{name}  ' + '  '.join(statuses), sep]
+
+    if not detail.get('success'):
+        error = detail.get('message') or '未知错误'
+        lines.append(f'  📝 错误: {error}')
+    else:
+        bq = detail.get('before_quota')
+        bu = detail.get('before_used')
+        aq = detail.get('after_quota')
+        au = detail.get('after_used')
+        usd_bq, usd_aq = usd(bq), usd(aq)
+        if usd_aq is None:
+            lines.append('  📍 当前余额: 未知')
+        else:
+            bu = 0.0 if bu is None else float(bu)
+            au = 0.0 if au is None else float(au)
+            if usd_bq is not None:
+                lines.append(f'  📍 签到前余额: ${usd_bq:.2f}   📊消耗: ${usd(bu):.2f}')
+                lines.append(f'  📍 签到后余额: ${usd_aq:.2f}   📊消耗: ${usd(au):.2f}')
+            else:
+                lines.append(f'  📍 当前余额: ${usd_aq:.2f}   📊消耗: ${usd(au):.2f}')
+
+    lines.append(sep)
     return '\n'.join(lines)
 
 
@@ -455,14 +438,14 @@ def persist_state(details: dict) -> None:
             json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8'
         )
     except Exception as e:  # noqa: BLE001
-        print(f'[STATE] 保存失败: {type(e).__name__} {e}')
+        print(f'[状态] 保存失败: {type(e).__name__} {e}')
 
 
 # ---------- Bark 通知 ----------
 def send_bark(env: dict, title: str, content: str) -> bool:
     key = env.get('BARK_KEY', '')
     if not key:
-        print('[NOTIFY] BARK_KEY 未配置，跳过 Bark 通知')
+        print('[通知] BARK_KEY 未配置，跳过 Bark 通知')
         return False
     server = env.get('BARK_SERVER', 'https://api.day.app').rstrip('/')
     data = {
@@ -475,10 +458,10 @@ def send_bark(env: dict, title: str, content: str) -> bool:
     try:
         with httpx.Client(timeout=30.0) as c:
             resp = c.post(f'{server}/push', json=data)
-        print(f'[NOTIFY] Bark 推送 status={resp.status_code} title={title}')
+        print(f'[通知] Bark 推送 status={resp.status_code} title={title}')
         return resp.status_code < 400
     except Exception as e:  # noqa: BLE001
-        print(f'[NOTIFY] Bark 推送失败: {type(e).__name__} {e}')
+        print(f'[通知] Bark 推送失败: {type(e).__name__} {e}')
         return False
 
 
@@ -494,11 +477,10 @@ def run_all(conn, accounts, env, now_str, today) -> tuple[dict, int]:
             model = {'provider': provider, 'name': name, 'success': False, 'skipped': False,
                      'message': f'不支持的 provider: {provider}', 'usage_increase': 0.0}
             details[key] = model
-            print(f'  [FAIL] {name} 不支持的 provider')
+            print(format_account_block(model, now_str))
             continue
 
         baseline = last_balance(conn, key)
-        already = checked_in_today(conn, key, today)
 
         proxy_url = env.get('CHECKIN_PROXY_URL', '')
         use_proxy = True  # 所有 provider 都走代理
@@ -510,7 +492,7 @@ def run_all(conn, accounts, env, now_str, today) -> tuple[dict, int]:
                                          proxy=effective_proxy) as c:
                 if provider == 'agentrouter':
                     return await http_login_agentrouter(c, acc, cfg, baseline)
-                return await http_checkin_anyrouter(c, acc, cfg, baseline, skip_signin=already)
+                return await http_checkin_anyrouter(c, acc, cfg, baseline)
 
         model = asyncio.run(worker())
         model['account_key'] = key
@@ -533,11 +515,9 @@ def run_all(conn, accounts, env, now_str, today) -> tuple[dict, int]:
         }
         insert_history(conn, record)
         details[key] = model
-        status = 'OK' if model['success'] else ('SKIP' if model['skipped'] else 'FAIL')
-        print(f'  [{status}]')
         print(format_account_block(model, now_str))
 
-    success_count = sum(1 for d in details.values() if d.get('success', False) or d.get('skipped', False))
+    success_count = sum(1 for d in details.values() if d.get('success', False))
     return details, success_count
 
 
@@ -552,15 +532,9 @@ def build_notification(details: dict, total: int, success: int, now_str) -> tupl
     all_sections = []
     for provider_name, provider_details in provider_groups.items():
         provider_total = len(provider_details)
-        provider_success = sum(1 for d in provider_details if d.get('success', False) and not d.get('skipped', False))
-        provider_skipped = sum(1 for d in provider_details if d.get('skipped', False))
-        provider_handled = provider_success + provider_skipped
+        provider_success = sum(1 for d in provider_details if d.get('success', False))
         if provider_success == provider_total:
             ptitle = f'✅ {provider_name}签到全部成功 ({provider_success}/{provider_total})'
-        elif provider_skipped == provider_total:
-            ptitle = f'ℹ️ {provider_name}今日已签到，跳过 ({provider_total}/{provider_total})'
-        elif provider_handled == provider_total:
-            ptitle = f'⚠️ {provider_name}签到完成（部分跳过）({provider_success}+{provider_skipped}/{provider_total})'
         elif provider_success > 0:
             ptitle = f'⚠️ {provider_name}签到部分成功 ({provider_success}/{provider_total})'
         else:
@@ -592,20 +566,20 @@ def main() -> int:
         try:
             acc = json.loads(raw)
         except json.JSONDecodeError as e:
-            print(f'[FAILED] ACCOUNT_{i} JSON 解析失败: {e}')
+            print(f'[失败] ACCOUNT_{i} JSON 解析失败: {e}')
             return 1
         if not isinstance(acc, dict) or not acc:
-            print(f'[FAILED] ACCOUNT_{i} 必须是非空 JSON 对象')
+            print(f'[失败] ACCOUNT_{i} 必须是非空 JSON 对象')
             return 1
         acc.setdefault('name', f'ACCOUNT_{i}')
         accounts.append(acc)
         i += 1
 
     if not accounts:
-        print('[FAILED] 未配置任何账号（需要 ACCOUNT_N 环境变量，每个账号一行）')
+        print('[失败] 未配置任何账号（需要 ACCOUNT_N 环境变量，每个账号一行）')
         return 1
 
-    print(f'[CONFIG] 共 {len(accounts)} 个账号')
+    print(f'[配置] 共 {len(accounts)} 个账号')
     now = datetime.now()
     now_str = now.strftime('%Y-%m-%d %H:%M:%S')
     today = now.strftime('%Y-%m-%d')
@@ -626,12 +600,11 @@ def main() -> int:
         print(content)
         send_bark(env, title, content)
     else:
-        print('[INFO] 无结果，跳过通知')
+        print('[信息] 无结果，跳过通知')
 
-    # 退出码：仅当存在「真实失败」(非跳过、非成功)才返回非零，
-    # 已签到跳过也视为本次已正常处理。
+    # 退出码：存在真实失败即返回非零
     genuine_fail = sum(
-        1 for d in details.values() if not d.get('success', False) and not d.get('skipped', False)
+        1 for d in details.values() if not d.get('success', False)
     )
     return 0 if genuine_fail == 0 else 1
 
