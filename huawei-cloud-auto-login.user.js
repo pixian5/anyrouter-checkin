@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         华为云自动登录（修复自动填充后按钮灰色）
 // @namespace    huawei-cloud-login
-// @version      0.6.0
+// @version      0.7.1
 // @description  华为云新版登录页(hwid Vue3 SDK)：浏览器自动填充后登录按钮灰色。核心思路：无论自动填充落在可视框还是隐藏假表单，都强制用 value setter 写回 + 派发完整 input 事件序列，持续直到按钮点亮再用合成事件点击登录。
 // @author       pixian5
 // @match        https://auth.huaweicloud.com/authui/login.html*
@@ -15,10 +15,13 @@
   'use strict';
 
   // ---------- 新版 hwid Vue3 SDK 选择器 ----------
+  // 登录方式 tab：页面默认在"手机号登录"，必须先切到"密码登录"才出现账号密码框
+  // 密码登录 tab 父元素 .accountLogin（文本元素 .switch-item-text）
+  const PWD_TAB_SEL = ['.accountLogin .switch-item-text', 'div.accountLogin', '.switch-item-text']; 
   // 可视账号框
-  const USERNAME_SEL = ['input.userAccount', 'input[name="userAccount"]', 'input[ht="input_pwdlogin_account"]'];
+  const USERNAME_SEL = ['input.userAccount', 'input[name="userAccount"]', 'input[ht="input_pwdlogin_account"]', '.accountLogin input[type="text"]'];
   // 可视密码框
-  const PASSWORD_SEL = ['input.hwid-input-pwd', 'input[ht="input_pwdlogin_pwd"]', '.hwid-pwdlogin-root input[type="password"]'];
+  const PASSWORD_SEL = ['input.hwid-input-pwd', 'input[ht="input_pwdlogin_pwd"]', '.hwid-pwdlogin-root input[type="password"]', '.accountLogin input[type="password"]'];
   // 触发登录的可点击元素
   const SUBMIT_SEL = ['[ht="click_pwdlogin_submitLogin"]', '.normalBtn[ht="click_pwdlogin_submitLogin"]'];
 
@@ -37,6 +40,28 @@
       }
     }
     return null;
+  }
+
+  let pwdTabHandled = false; // 记录密码tab是否已处理过（只抢切一次，避免和用户来回抢）
+
+  // 切换到"密码登录"tab（页面默认在手机号/短信登录tab，账号密码框此时不存在）
+  // 只允许主动抢切一次：处理完密码登录后即让位，用户切回手机号就保持手机号，不再强制切回
+  function switchToPwdTab() {
+    if (pwdTabHandled) return false;
+    if (qsFirstVisible(USERNAME_SEL) && qsFirstVisible(PASSWORD_SEL)) return true;
+    const tab = qsFirstVisible(PWD_TAB_SEL);
+    if (tab) {
+      try { tab.click(); } catch (e) {
+        try {
+          tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+          tab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+          tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        } catch (e2) {}
+      }
+      console.info('[HWCloudAutoLogin] 已点击切换到密码登录 tab');
+      return true;
+    }
+    return false;
   }
 
   // 收集所有输入框（含隐藏假表单里的），用于找回自动填充的值
@@ -151,6 +176,10 @@
 
   function attemptLogin() {
     if (!location.pathname.includes('/authui/login')) return;
+
+    // 先确保切到"密码登录"tab（页面默认在手机号tab，账号密码框此时不存在）
+    switchToPwdTab();
+
     const c = collectInputs();
     if (!c.visibleU || !c.visibleP) return; // SDK 未就绪
 
@@ -185,6 +214,7 @@
 
     if (!loginAttempted) {
       loginAttempted = true;
+      pwdTabHandled = true; // 密码tab已处理，之后不再主动抢切（让位给用户，切回手机号就保持）
       console.info('[HWCloudAutoLogin] 检测到账号密码已就绪且按钮点亮，尝试自动登录');
 
       // 策略1：在密码框真实聚焦后按 Enter（依赖表单/框架提交逻辑，不依赖 isTrusted）
@@ -206,7 +236,7 @@
   }
 
   const boot = new MutationObserver(() => {
-    const ready = document.querySelector('input.userAccount, input.hwid-input-pwd, [ht="click_pwdlogin_submitLogin"]');
+    const ready = document.querySelector('input.userAccount, input.hwid-input-pwd, [ht="click_pwdlogin_submitLogin"], .accountLogin, .switch-item-text');
     if (ready) {
       boot.disconnect();
       startWatch();
@@ -219,5 +249,5 @@
     if (!timer) startWatch();
   }, 2000);
 
-  console.info('[HWCloudAutoLogin] 华为云自动登录脚本已加载 v0.6.0');
+  console.info('[HWCloudAutoLogin] 华为云自动登录脚本已加载 v0.7.0');
 })();
