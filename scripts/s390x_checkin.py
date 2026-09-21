@@ -500,9 +500,14 @@ def run_all(conn, accounts, env, now_str, today) -> tuple[dict, int]:
         baseline = last_balance(conn, key)
         already = checked_in_today(conn, key, today)
 
+        proxy_url = env.get('CHECKIN_PROXY_URL', '')
+        use_proxy = True  # 所有 provider 都走代理
+        effective_proxy = proxy_url if (proxy_url and use_proxy) else None
+
         async def worker():
-            async with httpx.AsyncClient(http2=True, timeout=25.0, follow_redirects=True,
-                                         headers={'User-Agent': cfg['user_agent']}) as c:
+            async with httpx.AsyncClient(http2=True, timeout=60.0, follow_redirects=True,
+                                         headers={'User-Agent': cfg['user_agent']},
+                                         proxy=effective_proxy) as c:
                 if provider == 'agentrouter':
                     return await http_login_agentrouter(c, acc, cfg, baseline)
                 return await http_checkin_anyrouter(c, acc, cfg, baseline, skip_signin=already)
@@ -532,7 +537,7 @@ def run_all(conn, accounts, env, now_str, today) -> tuple[dict, int]:
         print(f'  [{status}]')
         print(format_account_block(model, now_str))
 
-    success_count = sum(1 for d in details.values() if d.get('success', False))
+    success_count = sum(1 for d in details.values() if d.get('success', False) or d.get('skipped', False))
     return details, success_count
 
 

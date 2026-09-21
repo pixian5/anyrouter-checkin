@@ -1,6 +1,9 @@
 .claude
 .env
 .venv
+venv/
+checkin_daemon.log
+checkin_daemon.log.*
 __pycache__
 .pytest_cache
 .ruff_cache
