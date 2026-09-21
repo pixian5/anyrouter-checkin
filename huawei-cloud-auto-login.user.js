@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         华为云自动登录（修复自动填充后按钮灰色）
 // @namespace    huawei-cloud-login
-// @version      0.4.0
+// @version      0.5.0
 // @description  华为云新版登录页(hwid Vue3 SDK)：浏览器自动填充后登录按钮灰色。核心思路：无论自动填充落在可视框还是隐藏假表单，都强制用 value setter 写回 + 派发完整 input 事件序列，持续直到按钮点亮再用合成事件点击登录。
 // @author       pixian5
 // @match        https://auth.huaweicloud.com/authui/login.html*
@@ -86,8 +86,6 @@
   function getSubmit() {
     return qsFirstVisible(SUBMIT_SEL) || document.querySelector('[ht="click_pwdlogin_submitLogin"]');
   }
-
-  // 是否“灰”按钮：查找按钮及其祖先里是否带 disabled 标志
   function isButtonDisabled(btn) {
     if (!btn) return true;
     if (btn.getAttribute('disabled') === 'true') return true;
@@ -103,16 +101,35 @@
 
   let clickedOnce = false;
 
+  // 从 localStorage 读可选账号/密码（放在本机，不写公共仓库）
+  function savedCreds() {
+    try {
+      const u = (localStorage.getItem('HUAWEI_AUTO_USER') || '').trim();
+      const p = localStorage.getItem('HUAWEI_AUTO_PASS') || '';
+      return { u, p };
+    } catch (e) { return { u: '', p: '' }; }
+  }
+
   function attemptLogin() {
     if (!location.pathname.includes('/authui/login')) return;
     const c = collectInputs();
     if (!c.visibleU || !c.visibleP) return; // SDK 未就绪
 
-    // 从隐藏假表单/任何输入框找回值，补进可视框
-    if (!c.visibleU.value && c.uValues.size) setNativeValue(c.visibleU, [...c.uValues][0]);
-    if (!c.visibleP.value && c.pValues.size) setNativeValue(c.visibleP, [...c.pValues][0]);
+    const cred = savedCreds();
 
-    // 强制写回 + 派发（无论值原本是否已在可视框，每次都用 setter+事件），持续直到点亮
+    // 数据来源优先级：可视框已有值 > 隐藏假表单值 > localStorage 配置
+    const uVal = c.visibleU.value || ([...c.uValues][0] || '') || cred.u;
+    const pVal = c.visibleP.value || ([...c.pValues][0] || '') || cred.p;
+
+    // 有账号但密码为空（Chrome 因 autocomplete=off 不填充密码框）-> 用配置补，否则永远点不亮
+    if (uVal && !c.visibleP.value && pVal) {
+      console.info('[HWCloudAutoLogin] 检测到账号已填充但密码为空，用本机配置补填密码');
+      setNativeValue(c.visibleP, pVal);
+    }
+    if (c.visibleU.value !== uVal && uVal) setNativeValue(c.visibleU, uVal);
+    if (c.visibleP.value !== pVal && pVal) setNativeValue(c.visibleP, pVal);
+
+    // 强制写回 + 派发（核心：无论是否已填，每次都用 setter+事件），持续直到点亮
     if (c.visibleU.value || c.visibleP.value) {
       forceWrite(c.visibleU);
       forceWrite(c.visibleP);
@@ -122,7 +139,10 @@
     if (!c.visibleU.value || !c.visibleP.value) return;
 
     const btn = getSubmit();
-    if (!btn || isButtonDisabled(btn)) return; // 还没点亮，下轮再来
+    if (!btn || isButtonDisabled(btn)) {
+      console.info('[HWCloudAutoLogin] 有值但按钮仍未点亮，继续重试: u=' + c.visibleU.value + ' p=' + (c.visibleP.value ? '***' : ''));
+      return;
+    }
 
     if (!clickedOnce) {
       clickedOnce = true;
@@ -156,5 +176,5 @@
     if (!timer) startWatch();
   }, 2000);
 
-  console.info('[HWCloudAutoLogin] 华为云自动登录脚本已加载 v0.4.0');
+  console.info('[HWCloudAutoLogin] 华为云自动登录脚本已加载 v0.5.0');
 })();
