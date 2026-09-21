@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         华为云自动登录（修复自动填充后按钮灰色）
 // @namespace    huawei-cloud-login
-// @version      0.5.0
+// @version      0.6.0
 // @description  华为云新版登录页(hwid Vue3 SDK)：浏览器自动填充后登录按钮灰色。核心思路：无论自动填充落在可视框还是隐藏假表单，都强制用 value setter 写回 + 派发完整 input 事件序列，持续直到按钮点亮再用合成事件点击登录。
 // @author       pixian5
 // @match        https://auth.huaweicloud.com/authui/login.html*
@@ -99,7 +99,46 @@
     return false;
   }
 
-  let clickedOnce = false;
+  let loginAttempted = false;
+
+  // 真实聚焦密码框（Enter 提交依赖焦点）
+  function focusPwd(el) {
+    try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) {} }
+  }
+
+  // 完整指针事件序列（比纯 mouse 更贴近真实点击）
+  function firePointer(el) {
+    const opts = { bubbles: true, cancelable: true, composed: true, view: window, pointerId: 1, isPrimary: true, button: 0, buttons: 1, clientX: 0, clientY: 0, pointerType: 'mouse' };
+    const seq = [
+      ['pointerdown', PointerEvent],
+      ['mousedown', MouseEvent],
+      ['pointerup', PointerEvent],
+      ['mouseup', MouseEvent],
+      ['click', MouseEvent],
+    ];
+    for (const [type, Ctor] of seq) {
+      try { el.dispatchEvent(new Ctor(type, opts)); } catch (e) {
+        try { el.dispatchEvent(new Event(type, opts)); } catch (e2) {}
+      }
+    }
+    try { el.click(); } catch (e) {}
+  }
+
+  // 密码框 Enter 提交
+  function fireEnter(el) {
+    focusPwd(el);
+    const opts = { bubbles: true, cancelable: true, composed: true, view: window, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 };
+    for (const type of [
+      ['keydown', KeyboardEvent],
+      ['keypress', KeyboardEvent],
+      ['keyup', KeyboardEvent],
+    ]) {
+      const [t, Ctor] = type;
+      try { el.dispatchEvent(new Ctor(t, opts)); } catch (e) {
+        try { el.dispatchEvent(new Event(t, opts)); } catch (e2) {}
+      }
+    }
+  }
 
   // 从 localStorage 读可选账号/密码（放在本机，不写公共仓库）
   function savedCreds() {
@@ -144,13 +183,17 @@
       return;
     }
 
-    if (!clickedOnce) {
-      clickedOnce = true;
-      console.info('[HWCloudAutoLogin] 检测到账号密码已就绪且按钮点亮，自动点击登录');
-      const opts = { bubbles: true, cancelable: true, view: window };
-      try { btn.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
-      try { btn.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (e) {}
-      try { btn.dispatchEvent(new MouseEvent('click', opts)); } catch (e) { btn.click(); }
+    if (!loginAttempted) {
+      loginAttempted = true;
+      console.info('[HWCloudAutoLogin] 检测到账号密码已就绪且按钮点亮，尝试自动登录');
+
+      // 策略1：在密码框真实聚焦后按 Enter（依赖表单/框架提交逻辑，不依赖 isTrusted）
+      // 策略2：对登录按钮派发完整指针事件序列 + click
+      // 两者先后都触发，避免单一路径被风控忽略
+      fireEnter(c.visibleP);
+      window.setTimeout(() => { try { fireEnter(c.visibleP); } catch (e) {} }, 120);
+      window.setTimeout(() => { try { firePointer(btn); } catch (e) {} }, 250);
+      window.setTimeout(() => { try { fireEnter(c.visibleP); } catch (e) {} }, 400);
     }
   }
 
@@ -176,5 +219,5 @@
     if (!timer) startWatch();
   }, 2000);
 
-  console.info('[HWCloudAutoLogin] 华为云自动登录脚本已加载 v0.5.0');
+  console.info('[HWCloudAutoLogin] 华为云自动登录脚本已加载 v0.6.0');
 })();
