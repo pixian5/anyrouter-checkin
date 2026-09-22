@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 守护脚本：确保 mihomo 代理运行，每天 09:00 执行签到
+# 守护脚本：确保 mihomo 代理运行，每天 09:30 执行签到
 # 首次运行立即签到，之后每天定时
 set -euo pipefail
 
@@ -46,10 +46,10 @@ do_checkin() {
 # 首次立即签到
 do_checkin
 
-# 循环：每天 09:00 执行
+# 循环：每天 09:30 执行
 while true; do
     now=$(date +%s)
-    target=$(date -d "tomorrow 09:00" +%s 2>/dev/null || date -d "+1 day 09:00" +%s)
+    target=$(date -d "tomorrow 09:30" +%s 2>/dev/null || date -d "+1 day 09:30" +%s)
     wait_secs=$((target - now))
     if [ "$wait_secs" -le 0 ]; then
         wait_secs=86400
