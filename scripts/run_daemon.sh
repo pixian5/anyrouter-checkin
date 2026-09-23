@@ -3,8 +3,9 @@
 # 首次运行立即签到，之后每天定时
 set -euo pipefail
 
-REPO_DIR="/root/workspace/anyrouter-checkin"
-PROXY_DIR="/root/workspace/checkin-proxy"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROXY_DIR="$(cd "$REPO_DIR/.." && pwd)/checkin-proxy"
 PYTHON="${REPO_DIR}/venv/bin/python"
 LOG_FILE="${REPO_DIR}/checkin_daemon.log"
 
