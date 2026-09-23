@@ -391,6 +391,7 @@ def format_account_block(detail: dict, check_in_time: str) -> str:
     baseline_change = detail.get('baseline_balance_change') or 0
 
     statuses = []
+    already_checked = False
     if not detail.get('success'):
         statuses.append('❌ 签到失败')
     else:
@@ -404,6 +405,7 @@ def format_account_block(detail: dict, check_in_time: str) -> str:
             statuses.append(f'📈 相比上次记录余额变化 {sym}${usd(abs(baseline_change)):.2f}')
         if not statuses:
             statuses.append('ℹ️ 本次已签到，余额无变化')
+            already_checked = True
 
     lines = [f'{name}  ' + '  '.join(statuses), sep]
 
@@ -421,7 +423,7 @@ def format_account_block(detail: dict, check_in_time: str) -> str:
         else:
             bu = 0.0 if bu is None else float(bu)
             au = 0.0 if au is None else float(au)
-            if usd_bq is not None:
+            if usd_bq is not None and not already_checked:
                 lines.append(f'  📍 签到前余额: ${usd_bq:.2f}   📊消耗: ${usd(bu):.2f}')
                 lines.append(f'  📍 签到后余额: ${usd_aq:.2f}   📊消耗: ${usd(au):.2f}')
             else:
