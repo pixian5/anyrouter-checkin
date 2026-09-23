@@ -1,0 +1,24 @@
+.claude
+.env
+.venv
+venv/
+checkin_daemon.log
+checkin_daemon.log.*
+__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+coverage.xml
+htmlcov
+balance_hash.txt
+daily_checkin_state.json
+checkin_history.sqlite3
+.browser_profiles
+checkin_screenshots
+# 含明文密码/会话的本地 aicheckin 测试脚本，勿提交
+scripts/aicheckin_test_agentrouter.py
+scripts/aicheckin_test_anyrouter.py
+deploy.log
+
+.DS_Store
