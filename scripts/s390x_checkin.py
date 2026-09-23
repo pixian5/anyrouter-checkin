@@ -233,7 +233,14 @@ async def http_login_agentrouter(client, acc: dict, cfg: dict, baseline) -> dict
         model['message'] = f'登录请求失败: {type(e).__name__}'
         return model
 
-    d = r.json()
+    try:
+        d = r.json()
+    except Exception:
+        model['message'] = f'登录响应非JSON status={r.status_code} body={r.text[:120]!r}'
+        return model
+    if not isinstance(d, dict):
+        model['message'] = f'登录响应格式异常 status={r.status_code} body={r.text[:120]!r}'
+        return model
     if r.status_code >= 400 or not d.get('success'):
         model['message'] = f'登录失败 code={r.status_code} msg={d.get("message", "")}'
         return model
