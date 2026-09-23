@@ -19,7 +19,7 @@ fi
 
 git reset --hard "$REMOTE" >/dev/null 2>&1
 chown -R "${SUDO_USER:-linux1}:${SUDO_USER:-linux1}" "$REPO_DIR" 2>/dev/null || true
-./venv/bin/pip install -q "httpx[http2]" 2>/dev/null || true
+./venv/bin/pip install -q -i https://pypi.tuna.tsinghua.edu.cn/simple "httpx[http2]" 2>/dev/null || true
 # 重启签到服务（oneshot 会执行一次签到）；不再运行 poll 自身
 sudo systemctl restart anyrouter-checkin.service
 

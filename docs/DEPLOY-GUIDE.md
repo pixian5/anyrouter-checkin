@@ -18,7 +18,7 @@
 >
 > 1. **克隆仓库**：
 >    ```bash
->    git clone https://github.com/pixian5/anyrouter-checkin.git
+>    git clone https://gitcode.com/laotongtian/aicheckin.git
 >    cd anyrouter-checkin
 >    ```
 > 2. **配置账号**：复制 `.env.example` 为 `.env`，按「账号配置（ACCOUNT_N 格式）」填入真实账号（每个账号一个 `ACCOUNT_N` 变量，含 provider/email+password 或 session）。`.env` 含密钥，不要提交 git。
@@ -129,7 +129,7 @@ node --version
 在一台全新服务器上用有 sudo 的用户执行：
 
 ```bash
-sudo bash /path/to/scripts/install_server.sh   # 可选第2参数为仓库URL，缺省 https://github.com/pixian5/anyrouter-checkin.git
+sudo bash /path/to/scripts/install_server.sh   # 可选第2参数为仓库URL，缺省 https://gitcode.com/laotongtian/aicheckin.git
 # 或远程拉脚本： bash <(curl -sL <raw链接>)
 ```
 
@@ -153,7 +153,7 @@ sudo journalctl -u anyrouter-checkin.service -n 30
 ### 方案 B：手动部署
 
 ```bash
-sudo mkdir -p /opt && sudo git clone https://github.com/pixian5/anyrouter-checkin.git /opt/anyrouter-checkin
+sudo mkdir -p /opt && sudo git clone https://gitcode.com/laotongtian/aicheckin.git /opt/anyrouter-checkin
 cd /opt/anyrouter-checkin
 sudo chown -R $(whoami):$(whoami) .
 python3 -m venv venv && ./venv/bin/pip install "httpx[http2]"

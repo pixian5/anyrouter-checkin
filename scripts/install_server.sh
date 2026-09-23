@@ -18,7 +18,7 @@
 #   - 首次执行后，服务器会通过 deploy_poll 每5分钟自动拉取 GitHub 新代码并重启
 set -euo pipefail
 
-REPO_URL="${1:-https://github.com/pixian5/anyrouter-checkin.git}"
+REPO_URL="${1:-https://gitcode.com/laotongtian/aicheckin.git}"
 BRANCH="main"
 APP_DIR="${APP_DIR:-/opt/anyrouter-checkin}"
 RUN_USER="${SUDO_USER:-$(whoami)}"
@@ -65,8 +65,8 @@ if [[ ! -x "$APP_DIR/venv/bin/python" ]]; then
   log "创建虚拟环境并安装 httpx..."
   python3 -m venv "$APP_DIR/venv"
 fi
-"$APP_DIR/venv/bin/pip" install --upgrade pip -q
-"$APP_DIR/venv/bin/pip" install -q "httpx[http2]"
+"$APP_DIR/venv/bin/pip" install --upgrade pip -q -i https://pypi.tuna.tsinghua.edu.cn/simple
+"$APP_DIR/venv/bin/pip" install -q -i https://pypi.tuna.tsinghua.edu.cn/simple "httpx[http2]"
 chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
 
 # ---------- 4. systemd 单位文件 ----------
