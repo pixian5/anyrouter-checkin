@@ -38,6 +38,14 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+# ---------- 0. 设置系统时区为台北(UTC+8) ----------
+log "设置系统时区为 Asia/Taipei ..."
+if command -v timedatectl >/dev/null 2>&1 && timedatectl set-timezone Asia/Taipei 2>/dev/null; then
+  log "系统时区已设为 Asia/Taipei"
+else
+  ln -sf /usr/share/zoneinfo/Asia/Taipei /etc/localtime && log "系统时区已设为 Asia/Taipei"
+fi
+
 # ---------- 1. 基础依赖 ----------
 log "安装基础依赖 (git/nodejs/python3-venv)..."
 export DEBIAN_FRONTEND=noninteractive
@@ -92,7 +100,7 @@ cat > "/etc/systemd/system/${TIMER_NAME}" <<EOF
 Description=每日 AnyRouter 签到定时器
 
 [Timer]
-OnCalendar=*-*-* 09:30:00
+OnCalendar=*-*-* 12:00:00
 Persistent=true
 RandomizedDelaySec=180
 

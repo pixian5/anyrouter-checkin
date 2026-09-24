@@ -399,10 +399,11 @@ def format_account_block(detail: dict, check_in_time: str) -> str:
             statuses.append(f'🎁 签到获得 +${usd(reward):.2f}')
         if balance_change != 0:
             sym = '+' if balance_change > 0 else ''
-            statuses.append(f'💹 余额变化 {sym}${usd(abs(balance_change)):.2f}')
+            statuses.append(f'💹 余额 {sym}${usd(abs(balance_change)):.2f}')
         elif baseline_change != 0:
             sym = '+' if baseline_change > 0 else ''
-            statuses.append(f'📈 相比上次记录余额变化 {sym}${usd(abs(baseline_change)):.2f}')
+            statuses.append(f'🎁 签到获得 {sym}${usd(abs(baseline_change)):.2f}')
+            statuses.append(f'💹 余额 {sym}${usd(abs(baseline_change)):.2f}')
         if not statuses:
             statuses.append('ℹ️ 本次已签到，余额无变化')
             already_checked = True
