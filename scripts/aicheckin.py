@@ -561,8 +561,23 @@ def build_notification(details: dict, total: int, success: int, now_str) -> tupl
     return title, '\n\n'.join(all_sections)
 
 
+def check_system_timezone() -> None:
+    """系统时区自检：非 UTC+8 时打醒目告警。
+
+    守护脚本按系统时区算「明天 12:00」，若容器重建后 /etc/localtime 退回 UTC，
+    签到会静默晚 8 小时且日志上看不出异常，故在此显式告警。
+    """
+    now = datetime.now().astimezone()
+    off = now.utcoffset()
+    hours = off.total_seconds() / 3600 if off else 0
+    if hours != 8:
+        print(f'[警告] 系统时区为 {now.tzname()} (UTC{hours:+.0f})，期望 Asia/Taipei (UTC+8)')
+        print('[警告] 守护按此时区推算签到时间；若为 UTC 会比台北晚 8 小时，请执行 scripts/install_server.sh 修正')
+
+
 def main() -> int:
     env = load_dotenv()
+    check_system_timezone()
 
     # 账号配置：每个账号一行独立环境变量，ACCOUNT_1、ACCOUNT_2 ... 顺序编号
     # 每个值为一个 JSON 对象，必带 provider("agentrouter"/"anyrouter")，
