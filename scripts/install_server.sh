@@ -45,6 +45,9 @@ if command -v timedatectl >/dev/null 2>&1 && timedatectl set-timezone Asia/Taipe
 else
   ln -sf /usr/share/zoneinfo/Asia/Taipei /etc/localtime && log "系统时区已设为 Asia/Taipei"
 fi
+# 同步 /etc/timezone：glibc 只读 /etc/localtime，但 tzdata/dpkg 重配与部分语言库
+# 以 /etc/timezone 为准；两者不一致时，容器重建后时区可能回退成 UTC（签到晚 8 小时）
+echo "Asia/Taipei" > /etc/timezone 2>/dev/null || log "警告：/etc/timezone 同步失败，请手工核对时区"
 
 # ---------- 1. 基础依赖 ----------
 log "安装基础依赖 (git/nodejs/python3-venv)..."

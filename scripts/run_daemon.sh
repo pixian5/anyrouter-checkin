@@ -29,7 +29,7 @@ else
 fi
 
 # 收到 SIGTERM/SIGINT 立即退出（释放锁/pidfile），让部署脚本能可靠停掉旧守护
-cleanup() { rm -f "$PID_FILE" 2>/dev/null; exit 0; }
+cleanup() { [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null || true; rm -f "$PID_FILE" 2>/dev/null; exit 0; }
 trap cleanup SIGTERM SIGINT
 
 ensure_proxy() {
@@ -44,7 +44,8 @@ ensure_proxy() {
         log "mihomo 未运行，启动..."
     fi
     cd "$PROXY_DIR"
-    ./mihomo -d . -f config.yaml > mihomo.log 2>&1 &
+    # 9>&-：阻止锁 fd 泄漏给子进程（子进程继承 fd 9 会让 flock 永不释放）
+    ./mihomo -d . -f config.yaml > mihomo.log 2>&1 9>&- &
     sleep 5
     if ss -tlnp 2>/dev/null | grep -q ':7890' && curl -fsS -x http://127.0.0.1:7890 --max-time 15 https://www.google.com/generate_204 -o /dev/null 2>/dev/null; then
         log "mihomo 启动成功"
@@ -79,7 +80,10 @@ while true; do
     log "下次签到: $(date -d "@$target" '+%Y-%m-%d %H:%M:%S') (等待 ${wait_secs}s)"
     # 后台 sleep + wait（而非前台 sleep）：bash 对前台 sleep 会推迟信号处理，
     # 导致 SIGTERM 在长达 24h 的等待期内无法及时停掉旧守护；wait 可被信号中断并触发 trap
-    sleep "$wait_secs" &
-    wait $!
+    # 9>&-：同上，长时间运行的 sleep 不能持有锁 fd
+    sleep "$wait_secs" 9>&- &
+    SLEEP_PID=$!
+    wait "$SLEEP_PID"
+    SLEEP_PID=            # 正常等到点，清空以免 cleanup 误杀已结束的 pid
     do_checkin
 done
