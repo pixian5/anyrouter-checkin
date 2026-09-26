@@ -1,11 +1,11 @@
 #!/bin/bash
-# anyrouter-checkin 服务器一键部署脚本 (aicheckin / Ubuntu)
+# anyrouter-checkin 服务器一键部署脚本（aicheckin / Ubuntu）
 #
 # 作用：在一台全新服务器上完整复现部署：
 #   1. 安装基础依赖 (git / nodejs / python3-venv)
 #   2. 克隆仓库到 /opt/anyrouter-checkin
 #   3. 创建 venv 并安装 httpx[http2]
-#   4. 写入 systemd 服务 + 定时器（每日签到 + 每5分钟自动部署轮询）
+#   4. 写入 systemd 服务 + 定时器（每日 12:00 签到）
 #   5. 启用定时器
 #
 # 用法（在服务器上，用有 sudo 的用户执行）：
@@ -15,7 +15,7 @@
 # 注意：
 #   - 默认以当前 Linux 用户运行系统服务（签到/部署均以该用户身份）
 #   - 部署完成后必须另放一份真实 .env 到 $APP_DIR/.env（含密码/密钥，chmod 600），否则签到会失败
-#   - 首次执行后，服务器会通过 deploy_poll 每5分钟自动拉取 GitHub 新代码并重启
+#   - 推 git 仅为版本管理，不触发自动部署
 set -euo pipefail
 
 REPO_URL="${1:-https://gitcode.com/laotongtian/aicheckin.git}"
@@ -26,8 +26,6 @@ RUN_USER="${SUDO_USER:-$(whoami)}"
 # systemd 单位名称（与现有部署保持一致）
 SERVICE_NAME="anyrouter-checkin"
 TIMER_NAME="anyrouter-checkin.timer"
-DEPLOY_SERVICE="anyrouter-deploy.service"
-DEPLOY_TIMER="anyrouter-deploy.timer"
 
 log() { echo -e "[install] $(date '+%F %T') $*"; }
 
@@ -111,45 +109,17 @@ RandomizedDelaySec=180
 WantedBy=timers.target
 EOF
 
-cat > "/etc/systemd/system/${DEPLOY_SERVICE}" <<EOF
-[Unit]
-Description=anyrouter-checkin git 轮询自动部署
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-User=$RUN_USER
-ExecStart=$APP_DIR/scripts/deploy_poll.sh
-TimeoutStartSec=120
-EOF
-
-cat > "/etc/systemd/system/${DEPLOY_TIMER}" <<EOF
-[Unit]
-Description=anyrouter-checkin 自动部署轮询
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
-Unit=$DEPLOY_SERVICE
-
-[Install]
-WantedBy=timers.target
-EOF
-
-chmod +x "$APP_DIR/scripts/deploy_poll.sh"
 chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
 
 # ---------- 5. 启用并启动定时器 ----------
 log "重载 systemd 并启用定时器..."
 systemctl daemon-reload
 systemctl enable --now "${TIMER_NAME}"
-systemctl enable --now "${DEPLOY_TIMER}"
 
 # ---------- 6. 校验 .env ----------
 log ""
 log "===== 部署完成 ====="
-systemctl list-timers "${TIMER_NAME}" "${DEPLOY_TIMER}" --no-pager
+systemctl list-timers "${TIMER_NAME}" --no-pager
 
 if [[ -f "$APP_DIR/.env" ]]; then
   log "检测到 .env（$(wc -l < "$APP_DIR/.env") 行），可立即手动签到：sudo systemctl start ${SERVICE_NAME}"
@@ -158,5 +128,5 @@ else
   echo "[install]  .env 样例见 $APP_DIR/.env.example；密码等密钥文件请 chmod 600 且不要提交到 git。"
 fi
 
-log "自动部署轮询已启用：此后本地 git push 后最多 5 分钟内服务器会自动拉取并重启。"
+log "部署完成：本地 git push 仅为版本管理，不触发自动部署。"
 exit 0

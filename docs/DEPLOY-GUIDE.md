@@ -2,9 +2,7 @@
 
 > 用途：让任何 AI / 开发者不依赖作者记忆，仅凭本文件即可从零部署、运行、排查「账号每日自动签到」。
 > 项目根：本文件所在的仓库 `anyrouter-checkin`。
-> 运行环境分两种，**机制完全不同，不要混用**：
-> 1. **服务器**：Ubuntu（含 **s390x / IBM Z 大机**，无浏览器）→ 走 **纯 HTTP** 脚本。
-> 2. **本机**：macOS → 同样用纯 HTTP 脚本，但依赖本机 node 解 WAF、并可能受 TUN/VPN 影响。
+> 运行环境：**本机容器即生产**（无 systemd，由 supervisor 守护进程管理），签到时间 12:00 台北时间。
 
 ---
 
@@ -23,11 +21,11 @@
 >    ```
 > 2. **配置账号**：复制 `.env.example` 为 `.env`，按「账号配置（ACCOUNT_N 格式）」填入真实账号（每个账号一个 `ACCOUNT_N` 变量，含 provider/email+password 或 session）。`.env` 含密钥，不要提交 git。
 > 3. **准备依赖**：`python3 -m venv venv && ./venv/bin/pip install "httpx[http2]"`，确认有 node（anyrouter 解 WAF 用）。
-> 4. **手动跑通**：`./venv/bin/python scripts/aicheckin.py`，确认 3 个账号全部签到成功、日志显示余额/G奖励、Bark 收到一条「✅ 签到全部成功 (3/3)」。
-> 5. **部署到服务器**（若需要）：照「服务器部署」节，用 `scripts/install_server.sh` 一键部署，然后手动放置真实 `.env` 并 `sudo systemctl start anyrouter-checkin.service` 验证一次。
-> 6. **改代码后自动上线**：本地提交并 push 到 `main`，服务器经 GitHub Actions 或每 5 分钟的 git 轮询自动拉取并重启。改代码务必用 `scripts/aicheckin.py`，不要动仓库根目录旧的浏览器版 `checkin.py` / `pixian_overlay/*`。
+> 4. **手动跑通**：`./venv/bin/python scripts/aicheckin.py`，确认账号全部签到成功、日志显示余额/G奖励、Bark 收到一条「✅ 签到全部成功 (X/X)」。
+> 5. **部署到生产**（若需要）：照「服务器部署」节，用 `scripts/install_server.sh` 一键部署，然后手动放置真实 `.env` 并验证一次。
+> 6. **改代码后提交**：本地提交并 push 到 `main`，仅为版本管理，不触发自动部署。
 >
-> 请一步步执行并在每步完成后报告结果，遇到网络类 `ConnectError` 时先重跑确认（可能是本机 TUN 瞬态），不要误判。
+> 请一步步执行并在每步完成后报告结果，遇到网络类 `ConnectError` 时先重跑确认（可能是瞬态网络问题），不要误判。
 
 ---
 
@@ -98,10 +96,10 @@ BARK_KEY=<你的Bark key>
 ### 依赖
 
 ```bash
-# 服务器 / 本机通用：Python ≥3.11 仅需 httpx
+# 通用：Python ≥3.11 仅需 httpx
 python3 -m venv venv
 ./venv/bin/pip install "httpx[http2]"
-# anyrouter 的 WAF 解算依赖 node（服务器 s390x 需有 node18+，本机 macOS 自带 node 即可）
+# anyrouter 的 WAF 解算依赖 node（需有 node18+）
 node --version
 ```
 
@@ -116,7 +114,7 @@ node --version
 ### 输出/验证
 
 - 成功显示各账号「签到前/后余额、签到获得、余额变化」。
-- if 失败显示错误原因（`ConnectError` = 网络，`WAF 获取失败` = anyrouter WAF 卡在连接阶段）。
+- 若失败显示错误原因（`ConnectError` = 网络，`WAF 获取失败` = anyrouter WAF 卡在连接阶段）。
 - 结果写入 `checkin_history.sqlite3`（表 `checkin_history`）。
 - 可查历史：`./venv/bin/python scripts/show_checkin_history.py`。
 
@@ -124,72 +122,31 @@ node --version
 
 ## 四、服务器部署（Ubuntu / s390x）
 
-### 方案 A：一键脚本（推荐，可复现）
-
-在一台全新服务器上用有 sudo 的用户执行：
-
-```bash
-sudo bash /path/to/scripts/install_server.sh   # 可选第2参数为仓库URL，缺省 https://gitcode.com/laotongtian/aicheckin.git
-# 或远程拉脚本： bash <(curl -sL <raw链接>)
-```
-
-脚本做的事：
-1. 装依赖（git/nodejs/python3-venv）
-2. 克隆仓库到 `/opt/anyrouter-checkin`
-3. 建 venv 装 `httpx[http2]`
-4. 写 systemd 单位：
-   - `anyrouter-checkin.service`（oneshot，签到）
-   - `anyrouter-checkin.timer`（每日 09:30，Persistent，随机延时 180s）
-   - `anyrouter-deploy.service/.timer`（每 5 分钟 git 轮询自动部署）
-5. 启用定时器
-
-之后**必须**：
-```bash
-# 放置真实 .env（含账号/密钥），然后手动验证一次
-sudo systemctl start anyrouter-checkin.service
-sudo journalctl -u anyrouter-checkin.service -n 30
-```
-
-### 方案 B：手动部署
-
-```bash
-sudo mkdir -p /opt && sudo git clone https://gitcode.com/laotongtian/aicheckin.git /opt/anyrouter-checkin
-cd /opt/anyrouter-checkin
-sudo chown -R $(whoami):$(whoami) .
-python3 -m venv venv && ./venv/bin/pip install "httpx[http2]"
-# 手写 systemd 单位（参考 deploy/systemd/*）或直接复用 install_server.sh
-```
-
-### 定时器管理
-
-```bash
-systemctl list-timers anyrouter-checkin.timer       # 查看下次触发
-sudo systemctl start anyrouter-checkin.service      # 立即手动签到
-sudo journalctl -u anyrouter-checkin.service -n 20  # 日志
-```
+> **历史文档**：本节的 s390x / systemd 部署流程已不再适用当前生产环境。
+>
+> **当前生产环境**：本机容器即生产，无 systemd，由 supervisor 守护进程管理，签到时间 12:00 台北时间。
+>
+> 如需在新服务器上部署，请参考 `docs/aicheckin-deploy.md` 的历史部署文档。
 
 ---
 
-## 五、自动部署（改代码后自动上线，双保险）
+## 五、自动部署
 
-1. **GitHub Actions**（`on: push` 到 `main`）：SSH 到服务器 `git reset --hard` + 装依赖 + 重启签到服务。
-   - 依赖仓库 Secrets：`DEPLOY_HOST`、`DEPLOY_USER`、`SSH_DEPLOY_KEY`。
-   - **重要**：若 Action 永久卡 `queued`，先查仓库 Actions 开关是否被关：`gh api repos/{owner}/{repo}/actions/permissions`，为 `enabled:false` 时用 `gh api ... -X PUT -F enabled=true` 开启（**非账号级限制**）。
-2. **服务器端 git 轮询**（备用）：`scripts/deploy_poll.sh` + `anyrouter-deploy.timer` 每 5 分钟 `git fetch`，检测新 commit 即拉取并重启签到服务，日志写 `/opt/anyrouter-checkin/deploy.log`。
-
-因此**本地只push代码，服务器最多 5 分钟内自动拉取并重签**。
+> **历史配置**：GitHub Actions + 服务器端 git 轮询（`scripts/deploy_poll.sh` + `anyrouter-deploy.timer`）。
+>
+> **当前生产环境**：推 git 仅为版本管理，不触发自动部署。生产即本容器，无第二部署目标。
 
 ---
 
 ## 六、s390x 架构特殊性
 
-- **无浏览器引擎**：Playwright / curl_cffi 均无 s390x 轮子，`js2py` 在 Py3.12 损坏 → 只能纯 HTTP。
-- anyrouter WAF `acw_sc__v2` 必须用 **node `vm` 注入完整浏览器全局**执行混淆 JS 求解；用正则抓取得到的是**假 cookie**（表达式残片），务必用 vm 完整解。
-- 部署后务必在服务器实测 3 个账号均成功再收尾。
+> **历史文档**：本节为 2026-09-06 部署到 l.sbbz.tech（s390x 架构）时的特殊处理。
+>
+> **当前生产环境**：x86_64 容器，无 s390x 架构限制。
 
 ---
 
-## 七、本机（macOS）运行注意
+## 七、本机运行注意
 
 - 用上面「手动跑一次」即可，依赖 node（macOS 自带，或用 Homebrew）。
 - **若开启了 TUN 增强模式**：刚开启时直连 anyrouter.top/Servers 会瞬态 `ConnectError`（路由/fake-ip 未就绪），**等 TUN 稳定后重跑即恢复**。因此遇 `ConnectError` 先重跑，**不要急着断定需加代理**。
@@ -202,7 +159,6 @@ sudo journalctl -u anyrouter-checkin.service -n 20  # 日志
 | 症状 | 原因与处理 |
 |------|-----------|
 | `ConnectError` / `WAF 获取失败` | 网络。TUN 场景先重跑；服务器场景 ping 不通可能是机器/防火墙/被暂停 |
-| Actions 一直 `queued` | 仓库 Actions 被关，用 API 重新启用（见第五节） |
 | 某账号总是 fails 不通知 | 已按账号级跳过追踪；失败账号每轮会重试并计入通知 |
 | 无 Bark 通知 | BARK_KEY 未配 / iOS 通知被系统杀掉或勿扰 |
 | `401`（anyrouter） | session cookie 过期，替换 `.env` 里该账号的 `session` |
