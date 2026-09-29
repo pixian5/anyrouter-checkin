@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# 守护脚本：确保 mihomo 代理运行，每天 12:00 执行签到
+# 守护脚本：确保 mihomo 代理运行，每天 9:00 执行签到
 # 首次运行立即签到，之后每天定时
+# 每次签到前 git pull 拉取最新仓库（同步其它服务器签到后提交的余额等文件）
 # 单实例：flock(退化为 pidfile) 独占锁，避免重跑部署残留旧守护 → 同一时刻重复签到/Bark 二次推送
 set -euo pipefail
 
@@ -55,9 +56,19 @@ ensure_proxy() {
     fi
 }
 
+sync_repo() {
+    cd "$REPO_DIR"
+    if git pull --ff-only >> "$LOG_FILE" 2>&1; then
+        log "git pull 成功"
+    else
+        log "git pull 失败（继续签到）"
+    fi
+}
+
 do_checkin() {
     log "开始签到..."
     ensure_proxy || { log "代理不可用，跳过签到"; return 1; }
+    sync_repo
     cd "$REPO_DIR"
     if "$PYTHON" scripts/aicheckin.py >> "$LOG_FILE" 2>&1; then
         log "签到完成"
@@ -69,10 +80,10 @@ do_checkin() {
 # 首次立即签到
 do_checkin
 
-# 循环：每天 12:00 执行
+# 循环：每天 9:00 执行
 while true; do
     now=$(date +%s)
-    target=$(date -d "tomorrow 12:00" +%s 2>/dev/null || date -d "+1 day 12:00" +%s)
+    target=$(date -d "tomorrow 9:00" +%s 2>/dev/null || date -d "+1 day 9:00" +%s)
     wait_secs=$((target - now))
     if [ "$wait_secs" -le 0 ]; then
         wait_secs=86400
