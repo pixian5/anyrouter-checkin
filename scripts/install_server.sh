@@ -68,6 +68,7 @@ else
   chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
 fi
 cd "$APP_DIR"
+bash "$APP_DIR/deploy/install-git-excludes.sh" "$APP_DIR"
 
 # ---------- 3. venv + 依赖 ----------
 if [[ ! -x "$APP_DIR/venv/bin/python" ]]; then

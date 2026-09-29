@@ -53,6 +53,8 @@ if [ ! -x "$project_root/.venv/bin/python" ]; then
 	exit 1
 fi
 
+bash "$script_dir/install-git-excludes.sh" "$project_root"
+
 render_dir="$(mktemp -d)"
 trap 'rm -rf "$render_dir"' EXIT
 render_template "$template_dir/anyrouter-checkin.service.in" "$render_dir/anyrouter-checkin.service"

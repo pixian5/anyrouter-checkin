@@ -1,10 +1,10 @@
 # 上游外挂维护约定
 
-本项目以 `millylee/anyrouter-check-in` 的 `upstream/main` 为上游，并在本地集成分支中保留完整上游 Git 历史。上游文件可以在本项目分支中直接修改；同步时通过 Git 合并显式处理冲突。签到奖励校验、状态与审计等项目定制仍优先放在 `pixian_overlay/`、独立部署文件和测试中，以减少与上游改动的冲突面。
+本项目以 `millylee/anyrouter-check-in` 的 `upstream/main` 为上游，并保留完整上游 Git 历史。除 README 中按全局工程要求增加的进度/计划区块外，所有上游已有文件都必须保持与 `upstream/main` 相同的内容和文件模式。签到奖励校验、状态、审计、部署忽略规则和镜像下载等本地定制只能放在 `pixian_overlay/`、`deploy/`、独立文档或新增测试中。
 
 ## 运行方式
 
-根目录 `checkin.py` 与 `utils/` 以 `upstream/main` 为基线；需要直接修改时，应在集成分支上提交，并补充对应回归测试。现有服务器定制主体位于 `pixian_overlay.app` 和 `pixian_overlay.utils`；`pixian_overlay.runner` 安装独立运行时补丁后调用外挂主体。服务器在自己的 clone 中执行 `deploy/install-local-systemd.sh`，安装器按当前目录生成 systemd unit，因此运行入口不绑定特定服务器或固定路径。
+根目录 `checkin.py`、`utils/`、`.env.example`、`.gitignore`、`pyproject.toml`、`uv.lock`、上游 workflow 和 `scripts/setup_mihomo_proxy.sh` 均保持上游原文。现有服务器定制主体位于 `pixian_overlay.app` 和 `pixian_overlay.utils`；`pixian_overlay.runner` 安装独立运行时补丁后调用外挂主体。服务器在自己的 clone 中执行 `deploy/install-local-systemd.sh`，安装器按当前目录生成 systemd unit，并把本地运行产物规则写入 `.git/info/exclude`，因此无需修改上游 `.gitignore`。
 
 当前外挂 `actual_checkin` 负责验证手动签到是否真正到账，`pixian_overlay.app` 负责跨运行验证自动签到 provider：
 
@@ -22,14 +22,14 @@
 
 ## 上游更新
 
-本地仓库最初以源码快照单独初始化，没有与 GitHub 上游共享提交祖先。首次接入在隔离分支中使用一次 `git merge --allow-unrelated-histories upstream/main`，保留两边历史；之后可按常规方式同步上游：
+本地快照历史已通过一次 `git merge --allow-unrelated-histories upstream/main` 接入，当前分支已有共同祖先；之后按常规方式同步：
 
 1. 在集成分支确认工作区干净，执行 `git fetch upstream`。
 2. 查看 `git log --oneline HEAD..upstream/main` 与 `git diff --stat HEAD...upstream/main`。
-3. 执行 `git merge --no-ff upstream/main`，逐项解决冲突，保留所需的上游改动和本地定制。
-4. 运行项目测试及 `tests/test_actual_checkin_overlay.py`，并执行 `scripts/verify_upstream_merged.sh`。
+3. 执行 `git merge --no-ff upstream/main`。若有冲突，把需要保留的本地行为迁入 `pixian_overlay/`、`deploy/` 或独立测试，不直接改上游文件。
+4. 运行项目测试，并执行 `scripts/verify_upstream_merged.sh` 与 `scripts/verify_upstream_unchanged.sh`。
 5. 需要安装 systemd 服务时，在目标服务器的项目目录运行 `deploy/install-local-systemd.sh`，确认 `WorkingDirectory` 和 `ExecStart` 都指向该目录。
 
-`verify_upstream_merged.sh` 检查当前分支是否包含指定上游引用的提交历史，不再要求上游文件逐字节相同；这允许本地直接修改上游代码。上游原版当前存在自身的 MyPy 类型错误，因此 MyPy 仍只对 `pixian_overlay` 与定制测试指定路径运行。
+`verify_upstream_merged.sh` 检查上游历史已合入；`verify_upstream_unchanged.sh` 逐项检查上游文件内容和模式。后者只允许 README 中必需的开发进度/计划区块，其余 README 内容也必须与上游一致。上游原版当前存在自身的 MyPy 类型错误，因此 MyPy 只对 `pixian_overlay` 与定制测试指定路径运行。
 
-GitHub 仓库的 Actions 权限在仓库设置中关闭；workflow 的存在或本地修改不会自行启用远程签到，是否运行仍由仓库级 Actions 设置决定。
+本地非上游模板位于 `deploy/workflows/pixian-checkin.yml`，不会被 GitHub Actions 自动加载；上游 workflow 保留原文。GitHub 仓库的 Actions 权限在仓库设置中关闭，是否运行仍由仓库级配置决定。

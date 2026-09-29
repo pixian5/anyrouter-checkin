@@ -11,7 +11,7 @@ aicheckin 纯 HTTP 统一签到脚本。
      并据此计算相对上次记录的余额变化。
 
 配置：从 .env 读取（ACCOUNT_1..ACCOUNT_N 账号 / BARK_SERVER / BARK_KEY）
-版本：0.5.1
+版本：0.5.2
 """
 # fmt: off
 

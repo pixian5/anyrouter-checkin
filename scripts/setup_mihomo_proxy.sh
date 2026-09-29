@@ -24,10 +24,8 @@ cd "${PROXY_DIR}"
 
 echo "[INFO] Downloading mihomo ${MIHOMO_VERSION}..."
 ARCHIVE="mihomo-linux-amd64-${MIHOMO_VERSION}.gz"
-MH_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/${ARCHIVE}"
-if ! curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL -o "${ARCHIVE}" "https://gh-proxy.com/${MH_URL}" \
-	&& ! curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL -o "${ARCHIVE}" "https://ghfast.top/${MH_URL}" \
-	&& ! curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL -o "${ARCHIVE}" "${MH_URL}"; then
+if ! curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL -o "${ARCHIVE}" \
+	"https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/${ARCHIVE}"; then
 	echo "[WARN] Failed to download mihomo ${MIHOMO_VERSION}, skip proxy setup"
 	if [[ "${PROXY_REQUIRED}" == "true" ]]; then
 		exit 1
