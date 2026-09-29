@@ -133,7 +133,10 @@ async def test_verify_browser_login_fetches_profile_from_authenticated_page():
 	)
 
 	assert profile == {'id': 123, 'username': 'hqlak47'}
-	assert page.fetch_path == '/api/user/self'
+	assert page.fetch_path == {
+		'path': '/api/user/self',
+		'headers': {'Accept': 'application/json, text/plain, */*'},
+	}
 
 
 @pytest.mark.asyncio

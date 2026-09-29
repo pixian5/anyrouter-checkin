@@ -14,7 +14,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 if hasattr(sys.stdout, 'reconfigure'):
 	sys.stdout.reconfigure(line_buffering=True)
@@ -42,6 +42,9 @@ from pixian_overlay.utils.browser import (
 from pixian_overlay.utils.config import AccountConfig, AppConfig, load_accounts_config
 from pixian_overlay.utils.debug import debug_print, is_debug_enabled
 from pixian_overlay.utils.notify import notify
+
+if TYPE_CHECKING:
+	from playwright._impl._api_structures import SetCookieParam
 
 load_dotenv()
 
@@ -995,7 +998,7 @@ def _user_info_from_fetch_result(fetched: dict | None) -> dict:
 	if not fetched:
 		return {'success': False, 'error': 'Failed to get user info: no response'}
 	if fetched.get('error'):
-		return {'success': False, 'error': f"Failed to get user info: {fetched['error'][:50]}..."}
+		return {'success': False, 'error': f'Failed to get user info: {fetched["error"][:50]}...'}
 	status = fetched.get('status')
 	payload = fetched.get('json')
 	if status != 200:
@@ -1009,6 +1012,8 @@ def _user_info_from_fetch_result(fetched: dict | None) -> dict:
 	raw_used_quota = user_data.get('used_quota')
 	if not _is_finite_amount(raw_quota) or not _is_finite_amount(raw_used_quota):
 		return {'success': False, 'error': 'Failed to get user info: invalid quota values'}
+	raw_quota = cast(int | float, raw_quota)
+	raw_used_quota = cast(int | float, raw_used_quota)
 	quota = round(float(raw_quota) / 500000, 2)
 	used_quota = round(float(raw_used_quota) / 500000, 2)
 	return {
@@ -1089,7 +1094,7 @@ async def browser_check_in_requests(
 	context = await launch_login_context(settings)
 	try:
 		netloc = urlsplit(domain).netloc
-		cookie_list = [
+		cookie_list: list[SetCookieParam] = [
 			{'name': name, 'value': value, 'domain': netloc, 'path': '/'}
 			for name, value in (all_cookies or {}).items()
 			if isinstance(value, str)
@@ -1112,7 +1117,9 @@ async def browser_check_in_requests(
 				break
 			except Exception as exc:  # nosec B112
 				nav_error = exc
-				print(f'[WARN] {account_name}: Browser goto {console_url} attempt {attempt}/4 failed ({exc!r:.100}); retrying...')
+				print(
+					f'[WARN] {account_name}: Browser goto {console_url} attempt {attempt}/4 failed ({exc!r:.100}); retrying...'
+				)
 				await asyncio.sleep(8)
 		if nav_error is not None:
 			raise nav_error
@@ -1126,9 +1133,7 @@ async def browser_check_in_requests(
 			print(user_info_before.get('error', 'Unknown error'))
 
 		if provider_config.needs_manual_check_in() and not skip_check_in:
-			check_in_outcome = await _execute_check_in_in_page(
-				page, account_name, provider_config, extra_headers
-			)
+			check_in_outcome = await _execute_check_in_in_page(page, account_name, provider_config, extra_headers)
 			user_info_after = await _fetch_user_info_in_page(
 				page, extra_headers, provider_config.user_info_path, account_name
 			)

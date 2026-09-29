@@ -1,5 +1,8 @@
 """连通性探测：纯 httpx 访问 ps.air-outer.com 与 anyrouter.top。"""
+
+# fmt: off
 import asyncio
+
 import httpx
 
 DEFAULT_HEADERS = {
@@ -43,3 +46,5 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# fmt: on

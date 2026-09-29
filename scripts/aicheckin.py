@@ -11,16 +11,18 @@ aicheckin 纯 HTTP 统一签到脚本。
      并据此计算相对上次记录的余额变化。
 
 配置：从 .env 读取（ACCOUNT_1..ACCOUNT_N 账号 / BARK_SERVER / BARK_KEY）
-版本：0.5.2
+版本：0.5.1
 """
+# fmt: off
 
 import asyncio
 import json
-import os
 import re
+import shutil
 import sqlite3
-import subprocess
+import subprocess  # nosec B404 - 固定参数调用本地 Node 求解器，不执行 shell
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -145,7 +147,7 @@ def usd(q):
 # 通过 node 的 vm 模块提供完整浏览器全局环境，执行混淆挑战 JS 解出 acw_sc__v2。
 NODE_SOLVER = r"""
 const fs = require('fs'), vm = require('vm');
-const chall = fs.readFileSync('/tmp/acw_chal.js', 'utf8');
+const chall = fs.readFileSync(process.argv[2], 'utf8');
 const noop = () => {};
 let cookies = {};
 const locEl = { style:{}, getAttribute:()=>null, setAttribute:noop };
@@ -191,21 +193,36 @@ def solve_acw(body: str) -> str | None:
     m = re.search(r'<script[^>]*>(.*?)</script>', body, re.S)
     if not m:
         return None
-    Path('/tmp/acw_chal.js').write_text(m.group(1), encoding='utf-8')
-    Path('/tmp/acw_solver.js').write_text(NODE_SOLVER, encoding='utf-8')
-    try:
-        p = subprocess.run(['node', '/tmp/acw_solver.js'], capture_output=True, text=True, timeout=40)
-    except Exception as e:  # noqa: BLE001
-        print(f'  [WAF 解 JS 出错] node 执行失败: {type(e).__name__} {e}')
+    node_binary = shutil.which('node')
+    if not node_binary:
+        print('  [WAF 解 JS 出错] 未找到 Node.js')
         return None
-    try:
-        data = json.loads(p.stdout.strip().splitlines()[-1])
-        val = data.get('acw_sc__v2')
-        return val if val else None
-    except Exception as e:  # noqa: BLE001
-        print(f'  [WAF 解 JS 失败] 无法解析 node 输出: {type(e).__name__} '
-              f'stdout={p.stdout[:120]!r} stderr={p.stderr[:120]!r}')
-        return None
+
+    with tempfile.TemporaryDirectory(prefix='aicheckin-waf-') as temp_dir:
+        challenge_path = Path(temp_dir) / 'acw_chal.js'
+        solver_path = Path(temp_dir) / 'acw_solver.js'
+        challenge_path.write_text(m.group(1), encoding='utf-8')
+        solver_path.write_text(NODE_SOLVER, encoding='utf-8')
+        try:
+            # 参数均由本程序生成，shell=False；Node 仅用于运行 WAF 挑战求解器。
+            p = subprocess.run(  # nosec B603
+                [node_binary, str(solver_path), str(challenge_path)],
+                capture_output=True,
+                text=True,
+                timeout=40,
+                shell=False,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f'  [WAF 解 JS 出错] node 执行失败: {type(e).__name__} {e}')
+            return None
+        try:
+            data = json.loads(p.stdout.strip().splitlines()[-1])
+            val = data.get('acw_sc__v2')
+            return val if val else None
+        except Exception as e:  # noqa: BLE001
+            print(f'  [WAF 解 JS 失败] 无法解析 node 输出: {type(e).__name__} '
+                  f'stdout={p.stdout[:120]!r} stderr={p.stderr[:120]!r}')
+            return None
 
 
 # ---------- 单账号签到 ----------
@@ -636,3 +653,5 @@ def main() -> int:
 
 if __name__ == '__main__':
     sys.exit(main())
+
+# fmt: on

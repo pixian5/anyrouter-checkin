@@ -398,15 +398,22 @@ async def test_prepare_cookies_retries_until_all_required_waf_cookies_are_availa
 	}
 
 
-async def test_missing_waf_cookies_abort_before_any_api_request(monkeypatch):
+async def test_missing_waf_cookies_fall_back_to_browser_without_httpx_request(monkeypatch):
 	async def missing_waf_cookies(*args, **kwargs):
 		return {'acw_tc': 'partial'}
 
 	def unexpected_api_request(*args, **kwargs):
-		raise AssertionError('API requests must not run with incomplete WAF cookies')
+		raise AssertionError('HTTPX requests must not run with incomplete WAF cookies')
+
+	browser_calls = []
+
+	async def fake_browser_check_in_requests(cookies, *args, **kwargs):
+		browser_calls.append(cookies)
+		return False, {'success': False, 'error': 'simulated browser failure'}, None
 
 	monkeypatch.setattr(checkin, 'get_waf_cookies_with_browser', missing_waf_cookies)
 	monkeypatch.setattr(checkin, 'run_check_in_requests', unexpected_api_request)
+	monkeypatch.setattr(checkin, 'browser_check_in_requests', fake_browser_check_in_requests)
 	provider = ProviderConfig(
 		name='anyrouter',
 		domain='https://anyrouter.top',
@@ -417,7 +424,8 @@ async def test_missing_waf_cookies_abort_before_any_api_request(monkeypatch):
 
 	result = await checkin.check_in_account(account, 0, AppConfig(providers={'anyrouter': provider}))
 
-	assert result == (False, None, None)
+	assert result == (False, {'success': False, 'error': 'simulated browser failure'}, None)
+	assert browser_calls == [{'session': 'current-session'}]
 
 
 @pytest.mark.parametrize(

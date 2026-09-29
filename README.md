@@ -15,6 +15,14 @@
 
 用于 Claude Code 中转站 Any Router 网站多账号每日签到，一次 $25，限时注册即送 100 美金，[点击这里注册](https://anyrouter.top/register?aff=gSsN)。业界良心，支持 Claude Sonnet 4.5、GPT-5-Codex、Claude Code 百万上下文（使用 `/model sonnet[1m]` 开启），`gemini-2.5-pro` 模型。
 
+## 当前开发进度
+
+已将本项目集成分支连接到 `millylee/anyrouter-check-in` 上游历史；后续可以合并上游更新，并在本地分支继续修改。当前同步方式和验证情况见[开发进度记录](docs/202609291921-当前开发进度.md)。
+
+## 下一步待实现
+
+持续跟进 `upstream/main`，按需同步功能并执行回归验证；具体步骤见[下一步计划](docs/202609291921-下一步待实现.md)。
+
 ## 功能特性
 
 - ✅ 多平台（兼容 NewAPI 与 OneAPI）

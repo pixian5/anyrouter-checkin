@@ -31,7 +31,7 @@ log() { echo -e "[install] $(date '+%F %T') $*"; }
 
 # 需要 root 才能写 /etc/systemd/system 与 /opt
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "请用 root 或 sudo 运行本脚本：" 
+  echo "请用 root 或 sudo 运行本脚本："
   echo "  sudo bash $0 ${1:-\$REPO_URL}"
   exit 1
 fi

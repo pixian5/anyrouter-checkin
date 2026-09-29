@@ -1,5 +1,9 @@
 """抓取 anyrouter ACW WAF 挑战页，保存原始 body 供分析/解算。"""
+
+# fmt: off
 import asyncio
+import tempfile
+
 import httpx
 
 HEADERS = {
@@ -15,13 +19,18 @@ HEADERS = {
 async def main():
     async with httpx.AsyncClient(http2=True, timeout=25.0, follow_redirects=True, headers=HEADERS) as c:
         r = await c.get("https://anyrouter.top/login")
-        with open("/tmp/any_challenge.html", "w", encoding="utf-8") as f:
-            f.write(r.text)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix="anyrouter-challenge-", suffix=".html", delete=False
+        ) as challenge_file:
+            challenge_file.write(r.text)
+            challenge_path = challenge_file.name
         cookies = "; ".join(f"{k}={v}" for k, v in r.cookies.items())
         print(f"status={r.status_code} http={r.http_version}")
         print(f"cookies: {cookies}")
-        print(f"saved body_len={len(r.text)} to /tmp/any_challenge.html")
+        print(f"saved body_len={len(r.text)} to {challenge_path}")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# fmt: on

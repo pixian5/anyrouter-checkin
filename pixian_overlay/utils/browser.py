@@ -1579,7 +1579,7 @@ async def signed_fetch_in_page(
 		- evaluate 异常: None
 	"""
 	try:
-		return await page.evaluate(
+		result = await page.evaluate(
 			r"""async ({method, path, body, headers}) => {
 				try {
 					const opts = {
@@ -1605,6 +1605,9 @@ async def signed_fetch_in_page(
 			}""",
 			{'method': method, 'path': path, 'body': json_body, 'headers': extra_headers},
 		)
+		if not isinstance(result, dict):
+			return None
+		return result
 	except Exception as e:  # nosec B110
 		debug_print(f'[WARN] signed_fetch_in_page failed for {method} {path}: {e!r:.160}')
 		return None
